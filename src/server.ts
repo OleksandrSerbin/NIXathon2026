@@ -1,8 +1,28 @@
 import express, { Request, Response } from 'express';
 import os from 'os';
+import { MoveHandler } from './game/move-handler';
 
 const app = express();
 const PORT: number = parseInt(process.env.PORT || '3000', 10);
+
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Initialize move handler (strategy can be changed via env var)
+const moveHandler = new MoveHandler(
+  (process.env.AI_STRATEGY as 'minimax' | 'mcts' | 'greedy') || 'minimax'
+);
+
+// Game move endpoint - receives game state and returns optimal move
+app.post('/move', async (req: Request, res: Response): Promise<void> => {
+  await moveHandler.handleMove(req, res);
+});
+
+// Alternative GET endpoint for move (if game state comes via query params)
+app.get('/move', async (req: Request, res: Response): Promise<void> => {
+  await moveHandler.handleMove(req, res);
+});
 
 // Health check endpoint
 app.get('/healthz', (req: Request, res: Response): void => {
@@ -33,4 +53,6 @@ app.get('/healthz', (req: Request, res: Response): void => {
 app.listen(PORT, (): void => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Health check endpoint: http://localhost:${PORT}/healthz`);
+  console.log(`Game move endpoint: http://localhost:${PORT}/move`);
+  console.log(`AI Strategy: ${process.env.AI_STRATEGY || 'minimax'}`);
 });
