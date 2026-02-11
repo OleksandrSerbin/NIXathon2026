@@ -721,6 +721,24 @@ export class GameTheoryNegotiation {
     const cooperationLevel = this.getCooperationLevel(gameId, playerId);
     return cooperationLevel < 0.3;
   }
+
+  /**
+   * Clear game-specific data when game is over or bot is killed
+   */
+  clearGame(gameId: number): void {
+    this.gameHistories.delete(gameId);
+    this.allianceHistories.delete(gameId);
+    Logger.debug('Cleared game data', { gameId });
+  }
+
+  /**
+   * Clear all game data (for all games)
+   */
+  clear(): void {
+    this.gameHistories.clear();
+    this.allianceHistories.clear();
+    Logger.debug('Cleared all game data');
+  }
 }
 
 // Type definitions

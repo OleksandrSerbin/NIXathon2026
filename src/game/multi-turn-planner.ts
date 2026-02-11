@@ -107,9 +107,11 @@ export class MultiTurnPlanner {
       // Simulate opponent actions
       state = this.simulateOpponentActions(request.gameId, state);
 
-      // Apply fatigue (turn 25+)
+      // Apply fatigue (turn 25+) - Exponential: 10, 20, 40, 80, 160...
+      // Turn 25: 10, Turn 26: 20, Turn 27: 40, Turn 28: 80, etc.
       if (state.turn >= 25) {
-        const fatigueDamage = (state.turn - 25) * 2;
+        const turnsSince25 = state.turn - 25;
+        const fatigueDamage = 10 * Math.pow(2, turnsSince25); // 10, 20, 40, 80, 160...
         state.playerTower.hp = Math.max(0, state.playerTower.hp - fatigueDamage);
         state.enemyTowers.forEach(enemy => {
           enemy.hp = Math.max(0, enemy.hp - fatigueDamage);
@@ -340,9 +342,11 @@ export class MultiTurnPlanner {
       // Track minimum resources
       minResources = Math.min(minResources, state.resources);
 
-      // Apply fatigue (turn 25+)
+      // Apply fatigue (turn 25+) - Exponential: 10, 20, 40, 80, 160...
+      // Turn 25: 10, Turn 26: 20, Turn 27: 40, Turn 28: 80, etc.
       if (state.turn >= 25) {
-        const fatigueDamage = (state.turn - 25) * 2;
+        const turnsSince25 = state.turn - 25;
+        const fatigueDamage = 10 * Math.pow(2, turnsSince25); // 10, 20, 40, 80, 160...
         state.playerTower.hp = Math.max(0, state.playerTower.hp - fatigueDamage);
         totalDamage += fatigueDamage;
       }
@@ -396,7 +400,7 @@ export class MultiTurnPlanner {
 
   /**
    * Predict our resource spending in a future turn
-   * PRIORITY: Defense (Survival) > Attack > Upgrade
+   * PRIORITY: Survival > Leveling > Defense > Attack
    */
   private predictOurSpending(state: SimulatedState, turn: number): number {
     let spending = 0;

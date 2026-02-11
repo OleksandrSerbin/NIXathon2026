@@ -94,8 +94,31 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Filter out dead players (HP <= 0) from all planning
+      // Check if game is over (bot is dead or no enemies left)
+      const isBotDead = request.playerTower.hp <= 0;
       const aliveEnemies = this.filterAliveEnemies(request.enemyTowers);
+      const isGameOver = isBotDead || aliveEnemies.length === 0;
+      
+      if (isGameOver) {
+        Logger.info('Game is over - cleaning up cache', {
+          gameId: request.gameId,
+          turn: request.turn,
+          isBotDead,
+          aliveEnemies: aliveEnemies.length,
+          botHP: request.playerTower.hp
+        });
+        
+        // Clean up game-specific caches
+        this.resourceTracker.clearGame(request.gameId);
+        if (this.gameTheory) {
+          this.gameTheory.clearGame(request.gameId);
+        }
+        
+        // Return empty response (game is over)
+        res.status(200).json([]);
+        return;
+      }
+      
       if (aliveEnemies.length !== request.enemyTowers.length) {
         Logger.debug('Filtered out dead enemies', {
           original: request.enemyTowers.length,
@@ -241,8 +264,31 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Filter out dead players (HP <= 0) from all planning
+      // Check if game is over (bot is dead or no enemies left)
+      const isBotDead = request.playerTower.hp <= 0;
       const aliveEnemies = this.filterAliveEnemies(request.enemyTowers);
+      const isGameOver = isBotDead || aliveEnemies.length === 0;
+      
+      if (isGameOver) {
+        Logger.info('Game is over - cleaning up cache', {
+          gameId: request.gameId,
+          turn: request.turn,
+          isBotDead,
+          aliveEnemies: aliveEnemies.length,
+          botHP: request.playerTower.hp
+        });
+        
+        // Clean up game-specific caches
+        this.resourceTracker.clearGame(request.gameId);
+        if (this.gameTheory) {
+          this.gameTheory.clearGame(request.gameId);
+        }
+        
+        // Return empty response (game is over)
+        res.status(200).json([]);
+        return;
+      }
+      
       if (aliveEnemies.length !== request.enemyTowers.length) {
         Logger.debug('Filtered out dead enemies from combat planning', {
           original: request.enemyTowers.length,
@@ -437,13 +483,110 @@ export class KingdomWarsHandler {
       turn
     });
     
-    // PRIORITY 1: SURVIVAL - Check if we need armor/defense FIRST
-    // Use multi-turn lookahead to predict incoming damage and plan defense
+    // Use multi-turn lookahead to predict incoming damage and plan
     const futureState = this.lookaheadPlanner.predictFutureState(request, []);
     const predictedDamage = futureState.expectedDamage;
     const predictedHP = futureState.expectedHP;
     
-    // Calculate how much armor we need to survive predicted damage
+    // PRIORITY ORDER: Survival > Leveling > Defense > Attack (only if necessary)
+    // MAIN FOCUS: Leveling and Defense - Attack only when absolutely necessary
+    
+    // PRIORITY 1: CRITICAL SURVIVAL - Build armor if HP is critical (< 40)
+    // This is immediate survival - must be FIRST priority
+    const isCriticalHP = playerTower.hp < 40;
+    let criticalArmorBuilt = false;
+    
+    if (isCriticalHP && remainingResources > 0) {
+      const criticalArmorNeeded = Math.max(0, 20 - (playerTower.armor || 0)); // FIXED: Build up to 20 armor (was 15)
+      if (criticalArmorNeeded > 0) {
+        const armorAmount = Math.min(criticalArmorNeeded, remainingResources, 15); // FIXED: Max 15 per turn (was 10)
+        if (armorAmount > 0) {
+          actions.push({ type: 'armor', amount: armorAmount });
+          remainingResources -= armorAmount;
+          criticalArmorBuilt = true;
+          Logger.debug('CRITICAL SURVIVAL: Armor built for immediate survival', { 
+            hp: playerTower.hp,
+            armorAmount, 
+            remaining: remainingResources
+          });
+        }
+      }
+    }
+    
+    // PRIORITY 2: LEVELING (Upgrade) - MAIN FOCUS: Increase income/resources
+    // Upgrade BEFORE building more armor because it increases income for future defense
+    // This is a MAIN FOCUS - prioritize upgrades to increase resource generation
+    const upgradeCost = this.getUpgradeCost(playerTower.level);
+    const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
+    Logger.debug('LEVELING evaluation (income increase priority)', {
+      upgradeCost,
+      canAfford: remainingResources >= upgradeCost,
+      shouldUpgrade,
+      currentResources: remainingResources,
+      currentHP: playerTower.hp,
+      currentLevel: playerTower.level,
+      predictedHP: predictedHP,
+      safeToUpgrade: futureState.safeToUpgrade,
+      reason: 'Upgrade increases income/resources for future defense investment'
+    });
+    
+    // FIXED: More aggressive upgrade - lower HP thresholds and upgrade when behind
+    // Only skip upgrade if HP is critical (already handled above)
+    const minSafeHPForUpgrade = turn <= 5 ? 50 : turn <= 10 ? 45 : 40; // Lowered from 60/55/50
+    const isSafeForUpgrade = (futureState.expectedHP > minSafeHPForUpgrade || 
+                            (turn <= 10 && playerTower.hp > 45)) && !isCriticalHP;
+    
+    // CRITICAL FIX: Upgrade when behind in levels (even if HP is lower)
+    const avgEnemyLevel = enemyTowers.length > 0 
+      ? enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length 
+      : playerTower.level;
+    const isBehind = playerTower.level < avgEnemyLevel - 0.5;
+    const isVeryBehind = playerTower.level < avgEnemyLevel - 1;
+    
+    // Upgrade if: (safe AND shouldUpgrade) OR (behind AND HP > 40) OR (very behind AND HP > 35)
+    const shouldUpgradeNow = (isSafeForUpgrade && shouldUpgrade) || 
+                            (isBehind && playerTower.hp > 40) || 
+                            (isVeryBehind && playerTower.hp > 35);
+    
+    if (remainingResources >= upgradeCost && shouldUpgradeNow) {
+      actions.push({ type: 'upgrade' });
+      remainingResources -= upgradeCost;
+      Logger.debug('LEVELING: Upgrade action added (increases income for defense)', { 
+        cost: upgradeCost, 
+        remaining: remainingResources,
+        turn,
+        currentHP: playerTower.hp,
+        currentLevel: playerTower.level,
+        avgEnemyLevel: avgEnemyLevel.toFixed(2),
+        isBehind,
+        isVeryBehind,
+        expectedHP: futureState.expectedHP,
+        upgradeReason: isVeryBehind ? 'Very behind in levels' : isBehind ? 'Behind in levels' : 'Safe to upgrade',
+        incomeIncrease: 'Upgrade increases resource generation for future defense'
+      });
+    } else if (remainingResources >= upgradeCost && !shouldUpgradeNow) {
+      Logger.debug('LEVELING: Skipping upgrade (not safe or not behind)', {
+        turn,
+        currentHP: playerTower.hp,
+        currentLevel: playerTower.level,
+        avgEnemyLevel: avgEnemyLevel.toFixed(2),
+        isBehind,
+        isVeryBehind,
+        minSafeHPForUpgrade,
+        expectedHP: futureState.expectedHP,
+        reason: 'HP too low or not behind in levels'
+      });
+    }
+    
+    // PRIORITY 3: DEFENSE - MAIN FOCUS: Build armor with remaining resources (after leveling)
+    // Now that we've upgraded (if safe), build armor with increased income potential
+    // This is a MAIN FOCUS - prioritize defense to survive and reduce incoming damage
+    // Note: We evaluate defense even if critical armor was built, to build more if needed
+    // FIXED: More lenient early rounds defense - build if HP < 60 (instead of 50)
+    // EARLY ROUNDS: Be conservative - only build armor if HP is low or late game
+    const isEarlyRoundsForDefense = turn <= 10;
+    const shouldBuildDefenseInEarlyRounds = isEarlyRoundsForDefense && (playerTower.hp < 60 || turn >= 25);
+    
     const shouldArmor = this.shouldBuildArmorWithLookahead(
       playerTower, 
       turn, 
@@ -452,7 +595,7 @@ export class KingdomWarsHandler {
       enemyTowers
     );
     
-    Logger.debug('Defense evaluation (survival priority)', {
+    Logger.debug('DEFENSE evaluation (after leveling)', {
       shouldBuildArmor: shouldArmor.shouldBuild,
       hp: playerTower.hp,
       armor: playerTower.armor,
@@ -462,56 +605,102 @@ export class KingdomWarsHandler {
       recommendedArmor: shouldArmor.recommendedAmount,
       isLateGame: turn >= 25,
       isLowHP: playerTower.hp < 60,
-      reason: shouldArmor.reason
+      isEarlyRounds: isEarlyRoundsForDefense,
+      shouldBuildDefenseInEarlyRounds,
+      reason: shouldArmor.reason,
+      note: isEarlyRoundsForDefense ? 'Early rounds: Save resources for upgrades, only build critical defense' : 'Building defense after leveling to use increased income',
+      criticalArmorAlreadyBuilt: criticalArmorBuilt
     });
     
-    // Build armor FIRST if needed for survival (before upgrades/attacks)
+    // Build armor with remaining resources (after upgrade)
+    // MAIN FOCUS: Defense - Save resources for future upgrades, but prioritize defense
+    const upgradeCostForDefense = this.getUpgradeCost(playerTower.level);
+    const resourcesNeededForUpgradeDefense = Math.max(0, upgradeCostForDefense - remainingResources);
+    const closeToUpgradeDefense = resourcesNeededForUpgradeDefense <= 40;
+    const veryCloseToUpgradeDefense = resourcesNeededForUpgradeDefense <= 20;
+    const defenseResourceBuffer = veryCloseToUpgradeDefense 
+      ? Math.max(5, upgradeCostForDefense - remainingResources) // Very close: minimal buffer (5) to allow upgrade
+      : closeToUpgradeDefense 
+        ? Math.max(10, upgradeCostForDefense - remainingResources + 5) // Close: save more
+        : 10; // Not close: save base buffer (10 resources) - defense is priority
+    
+    const availableForDefense = Math.max(0, remainingResources - defenseResourceBuffer);
+    
+    // EARLY ROUNDS: Only build if HP is low (< 50) or late game - save resources for upgrades
     if (shouldArmor.shouldBuild && remainingResources > 0) {
-      const armorAmount = Math.min(shouldArmor.recommendedAmount, remainingResources);
-      if (armorAmount > 0) {
-        actions.push({ type: 'armor', amount: armorAmount });
-        remainingResources -= armorAmount;
-        Logger.debug('Armor action added (survival priority)', { 
-          amount: armorAmount, 
-          remaining: remainingResources,
-          reason: shouldArmor.reason
+      // In early rounds, be more conservative - only build if HP is low
+      if (isEarlyRoundsForDefense && !shouldBuildDefenseInEarlyRounds && !criticalArmorBuilt) {
+        Logger.debug('EARLY ROUNDS: Skipping defense to save resources for upgrades', {
+          turn,
+          hp: playerTower.hp,
+          resources: remainingResources,
+          defenseResourceBuffer,
+          availableForDefense,
+          reason: 'Saving resources for leveling and future defense'
+        });
+      } else if (availableForDefense > 0) {
+        // FIXED: Build more armor proactively (15 instead of 10 max)
+        const armorAmount = Math.min(
+          shouldArmor.recommendedAmount, 
+          availableForDefense, 
+          15 // Max 15 per turn (increased from 10)
+        );
+        
+        if (armorAmount > 0) {
+          actions.push({ type: 'armor', amount: armorAmount });
+          remainingResources -= armorAmount;
+          Logger.debug('DEFENSE: Armor action added (after leveling, with resource saving)', { 
+            amount: armorAmount, 
+            remaining: remainingResources,
+            defenseResourceBuffer,
+            availableForDefense,
+            reason: shouldArmor.reason,
+            criticalArmorAlreadyBuilt: criticalArmorBuilt,
+            earlyRounds: isEarlyRoundsForDefense
+          });
+        }
+      } else {
+        Logger.debug('DEFENSE: Skipping to save resources for upgrade', {
+          turn,
+          resources: remainingResources,
+          defenseResourceBuffer,
+          availableForDefense,
+          reason: 'Saving resources for upcoming upgrade'
         });
       }
     }
     
-    // PRIORITY 2: Upgrade (only if safe after defense planning)
-    const upgradeCost = this.getUpgradeCost(playerTower.level);
-    const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
-    Logger.debug('Upgrade evaluation (with lookahead)', {
-      upgradeCost,
-      canAfford: remainingResources >= upgradeCost,
-      shouldUpgrade,
-      currentResources: remainingResources,
-      currentHP: playerTower.hp,
-      currentLevel: playerTower.level,
-      predictedHP: predictedHP,
-      safeToUpgrade: futureState.safeToUpgrade
-    });
+    // PRIORITY 4: ATTACK - LAST PRIORITY: Only attack when absolutely necessary
+    // MAIN FOCUS: Leveling and Defense - Attack only if:
+    // 1. Can kill enemy (eliminate threat = high value)
+    // 2. Critical survival (HP < 40, must reduce incoming damage)
+    // 3. 2-player scenario (must finish the game)
+    // Otherwise: Save ALL resources for leveling and defense
     
-    // IMPROVED: More aggressive upgrade - upgrade if safe (HP threshold based on turn)
-    const minSafeHPForUpgrade = turn <= 5 ? 60 : turn <= 10 ? 55 : 50;
-    const isSafeForUpgrade = futureState.expectedHP > minSafeHPForUpgrade || 
-                            (turn <= 10 && playerTower.hp > 55); // More lenient early game
+    const upgradeCostForNext = this.getUpgradeCost(playerTower.level);
+    const resourcesNeededForUpgrade = Math.max(0, upgradeCostForNext - remainingResources);
     
-    if (remainingResources >= upgradeCost && shouldUpgrade && isSafeForUpgrade) {
-      actions.push({ type: 'upgrade' });
-      remainingResources -= upgradeCost;
-      Logger.debug('Upgrade action added', { 
-        cost: upgradeCost, 
-        remaining: remainingResources,
-        turn,
-        currentHP: playerTower.hp,
-        expectedHP: futureState.expectedHP
-      });
-    }
+    // FIXED: Dynamic resource buffer - reduce when very close to upgrade
+    // - Base buffer: 15 resources (always save significant amount)
+    // - If close to upgrade (< 40 resources away): Save more (upgrade cost - current resources + 5)
+    // - If very close (< 20 resources away): Save minimal (5 resources) to allow upgrade next turn
+    const baseBuffer = 15; // Always save at least 15 resources for leveling/defense
+    const closeToUpgrade = resourcesNeededForUpgrade <= 40;
+    const veryCloseToUpgrade = resourcesNeededForUpgrade <= 20;
+    const resourceBuffer = veryCloseToUpgrade 
+      ? Math.max(5, upgradeCostForNext - remainingResources) // Very close: minimal buffer (5) to allow upgrade
+      : closeToUpgrade 
+        ? Math.max(baseBuffer, upgradeCostForNext - remainingResources + 5) // Close: save more
+        : baseBuffer; // Not close: save base buffer (15 resources)
     
-      // Attack best target using resource estimates and Game Theory history
-    if (remainingResources > 0) {
+    const availableForAttack = Math.max(0, remainingResources - resourceBuffer);
+    
+    // Check if only 2 players remain (game might end soon)
+    const aliveEnemies = enemyTowers.filter(e => e.hp > 0).length;
+    const isTwoPlayerScenario = aliveEnemies === 1; // Only 1 enemy = 2 players total
+    
+    // Only consider attacking if we have resources AND it's necessary
+    if (remainingResources > 0 && availableForAttack > 0) {
       const target = this.findBestAttackTargetWithHistory(
         request.gameId,
         enemyTowers, 
@@ -520,42 +709,102 @@ export class KingdomWarsHandler {
         this.gameTheory,
         request.turn
       );
-      Logger.debug('Attack target evaluation (with history and resources)', target ? {
+      Logger.debug('Attack target evaluation (ATTACK ONLY IF NECESSARY)', target ? {
         targetId: target.playerId,
         targetHp: target.hp,
         targetArmor: target.armor,
         availableResources: remainingResources,
+        upgradeCostForNext,
+        resourcesNeededForUpgrade,
+        resourceBuffer,
+        availableForAttack,
+        isTwoPlayerScenario,
+        aliveEnemies,
+        currentHP: playerTower.hp,
+        isCriticalHP: playerTower.hp < 40,
         enemyEstimate: this.resourceTracker.getEstimateForGame(request.gameId, target.playerId),
         isAlly: this.gameTheory?.isAlly(request.gameId, target.playerId, request.turn) || false,
         hasBetrayed: this.gameTheory?.hasBetrayed(request.gameId, target.playerId) || false,
-        cooperationLevel: this.gameTheory?.getCooperationLevel(request.gameId, target.playerId) || 0.5
+        cooperationLevel: this.gameTheory?.getCooperationLevel(request.gameId, target.playerId) || 0.5,
+        strategy: 'MAIN FOCUS: Leveling and Defense - Attack only if necessary'
       } : 'No valid target');
       
       if (target) {
-        // Use resource estimates and history to determine optimal attack size
-        const attackAmount = this.calculateOptimalAttackSize(
-          request.gameId,
-          target,
-          remainingResources,
-          this.resourceTracker,
-          this.gameTheory,
-          request.turn
-        );
-        if (attackAmount > 0) {
-          actions.push({
-            type: 'attack',
+        // Calculate if we can kill the target
+        const exactKillDamage = target.hp + target.armor;
+        const canKillTarget = exactKillDamage <= availableForAttack;
+        const isCriticalHP = playerTower.hp < 40; // Critical survival threshold
+        const isTwoPlayer = isTwoPlayerScenario; // Must finish the game
+        
+        // ATTACK ONLY WHEN ABSOLUTELY NECESSARY:
+        // 1. Can kill target (eliminate enemy = high value, reduces future threats)
+        // 2. Critical survival (HP < 40, must reduce incoming damage to survive)
+        // 3. 2-player scenario (must finish the game, no other options)
+        const shouldAttack = canKillTarget || isCriticalHP || isTwoPlayer;
+        
+        if (!shouldAttack) {
+          Logger.debug('SKIPPING ATTACK: Saving resources for leveling and defense', {
+            turn,
+            remainingResources,
+            upgradeCostForNext,
+            resourcesNeededForUpgrade,
+            resourceBuffer,
+            availableForAttack,
             targetId: target.playerId,
-            troopCount: attackAmount
+            targetHp: target.hp,
+            targetArmor: target.armor,
+            exactKillDamage: target.hp + target.armor,
+            canKill: canKillTarget,
+            isCriticalHP,
+            isTwoPlayer,
+            reason: 'Main focus: Leveling and Defense. Attack only when necessary (can kill, critical HP, or 2-player)'
           });
-          remainingResources -= attackAmount;
-          Logger.debug('Attack action added (resource-based)', {
-            targetId: target.playerId,
-            troopCount: attackAmount,
-            remaining: remainingResources,
-            reason: 'Using enemy resource estimates for optimal targeting'
-          });
+        } else {
+          // Use resource estimates and history to determine optimal attack size
+          // Limit to available resources (after saving buffer for leveling/defense)
+          const attackAmount = this.calculateOptimalAttackSize(
+            request.gameId,
+            target,
+            availableForAttack,
+            this.resourceTracker,
+            this.gameTheory,
+            request.turn
+          );
+          
+          if (attackAmount > 0) {
+            actions.push({
+              type: 'attack',
+              targetId: target.playerId,
+              troopCount: attackAmount
+            });
+            remainingResources -= attackAmount;
+            Logger.debug('Attack action added (ONLY WHEN NECESSARY)', {
+              targetId: target.playerId,
+              troopCount: attackAmount,
+              remaining: remainingResources,
+              resourceBuffer,
+              canKill: canKillTarget,
+              isCriticalHP,
+              isTwoPlayer,
+              reason: canKillTarget 
+                ? 'Can kill target (eliminate threat)' 
+                : isCriticalHP 
+                  ? 'Critical survival (HP < 40, must reduce damage)' 
+                  : '2-player scenario (must finish game)',
+              note: 'Main focus remains: Leveling and Defense'
+            });
+          }
         }
       }
+    } else {
+      Logger.debug('SKIPPING ATTACK: No resources available after saving for leveling/defense', {
+        turn,
+        remainingResources,
+        upgradeCostForNext,
+        resourceBuffer,
+        availableForAttack,
+        reason: 'Main focus: Leveling and Defense - All resources allocated to upgrades and armor'
+      });
     }
     
     const resourceUsage = {
