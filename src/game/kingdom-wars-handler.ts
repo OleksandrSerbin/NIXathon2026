@@ -851,6 +851,8 @@ export class KingdomWarsHandler {
 
   /**
    * Calculate optimal attack size based on enemy resources, state, and history
+   * Uses resource estimates from history to plan efficient attacks
+   * Avoids overkill when killing enemies
    */
   private calculateOptimalAttackSize(
     gameId: number,
@@ -861,17 +863,112 @@ export class KingdomWarsHandler {
   ): number {
     const estimate = resourceTracker.getEstimateForGame(gameId, target.playerId);
     
-    // Base attack: reasonable portion of resources
+    // Calculate exact damage needed to kill (HP + armor)
+    const exactKillDamage = target.hp + target.armor;
+    
+    // Base attack: reasonable portion of resources, but consider kill damage
     let attackSize = Math.min(availableResources, 30);
     
-    // Game Theory history adjustments
-    if (gameTheory) {
-      // If enemy betrayed us, attack harder (retaliation)
-      if (gameTheory.hasBetrayed(gameId, target.playerId)) {
-        attackSize = Math.min(availableResources, 45); // Larger attack
-        Logger.debug('Attacking betrayer with increased force', {
+    // PRIORITY 1: If we can kill them, use exact damage (avoid overkill)
+    if (exactKillDamage <= availableResources && exactKillDamage > 0) {
+      // Use exact kill damage, but add small buffer (1-2) for safety
+      attackSize = Math.min(exactKillDamage + 2, availableResources);
+      Logger.debug('Calculated exact kill damage', {
+        playerId: target.playerId,
+        exactKillDamage,
+        targetHP: target.hp,
+        targetArmor: target.armor,
+        attackSize,
+        reason: 'Exact kill damage to avoid overkill'
+      });
+    }
+    
+    // PRIORITY 2: Use resource estimates from history to plan efficient attacks
+    if (estimate) {
+      // Calculate enemy's current resource balance from history
+      // estimatedResources already accounts for generation and spending
+      const enemyResourceBalance = estimate.estimatedResources;
+      const enemyResourceGeneration = estimate.resourceGeneration;
+      
+      Logger.debug('Enemy resource balance from history', {
+        playerId: target.playerId,
+        estimatedResources: enemyResourceBalance,
+        resourceGeneration: enemyResourceGeneration,
+        spendingPattern: {
+          avgAttackSize: estimate.spendingPattern.avgAttackSize,
+          totalSpent: estimate.spendingPattern.totalSpent,
+          totalEarned: estimate.spendingPattern.totalEarned
+        }
+      });
+      
+      // If enemy has low resources, they can't defend well - smaller attack might be enough
+      if (enemyResourceBalance < enemyResourceGeneration * 0.5) {
+        // Enemy is resource-poor, but still need enough to kill if possible
+        if (exactKillDamage <= availableResources) {
+          attackSize = Math.min(attackSize, exactKillDamage + 1); // Minimal overkill
+        } else {
+          attackSize = Math.min(attackSize, 20); // Conservative attack
+        }
+        Logger.debug('Enemy has low resources, using efficient attack', {
+          playerId: target.playerId,
+          enemyResourceBalance,
+          attackSize
+        });
+      }
+      
+      // If enemy has high resources, they can build armor/upgrade - attack harder
+      if (enemyResourceBalance > enemyResourceGeneration * 2) {
+        // Enemy is resource-rich, but still don't overkill
+        if (exactKillDamage <= availableResources) {
+          attackSize = Math.min(attackSize, exactKillDamage + 3); // Small buffer for potential armor
+        } else {
+          attackSize = Math.min(availableResources, Math.max(attackSize, 35));
+        }
+        Logger.debug('Enemy has high resources, using stronger attack', {
+          playerId: target.playerId,
+          enemyResourceBalance,
+          attackSize
+        });
+      }
+      
+      // If enemy can upgrade, attack harder to prevent upgrade (but still avoid overkill)
+      if (resourceTracker.canAffordUpgradeForGame(gameId, target.playerId)) {
+        if (exactKillDamage <= availableResources) {
+          // Can kill them, but add buffer for potential upgrade
+          attackSize = Math.min(attackSize, exactKillDamage + 5);
+        } else {
+          attackSize = Math.min(availableResources, Math.max(attackSize, 40));
+        }
+        Logger.debug('Enemy can upgrade, preventing upgrade with attack', {
           playerId: target.playerId,
           attackSize
+        });
+      }
+      
+      // If enemy is close to death, use exact kill damage
+      if (target.hp < 30 && exactKillDamage <= availableResources) {
+        attackSize = Math.min(attackSize, exactKillDamage + 1); // Minimal overkill
+        Logger.debug('Enemy close to death, using exact kill damage', {
+          playerId: target.playerId,
+          exactKillDamage,
+          attackSize
+        });
+      }
+    }
+    
+    // Game Theory history adjustments (but still respect kill damage)
+    if (gameTheory) {
+      // If enemy betrayed us, attack harder (retaliation) but don't overkill
+      if (gameTheory.hasBetrayed(gameId, target.playerId)) {
+        if (exactKillDamage <= availableResources) {
+          attackSize = Math.min(attackSize, exactKillDamage + 3); // Small buffer for betrayer
+        } else {
+          attackSize = Math.min(availableResources, 45); // Larger attack if can't kill
+        }
+        Logger.debug('Attacking betrayer with increased force', {
+          playerId: target.playerId,
+          attackSize,
+          exactKillDamage
         });
       }
       
@@ -885,35 +982,33 @@ export class KingdomWarsHandler {
         });
       }
       
-      // If enemy is likely to attack us, attack harder (preemptive)
+      // If enemy is likely to attack us, attack harder (preemptive) but don't overkill
       if (gameTheory.willLikelyAttackUs(gameId, target.playerId)) {
-        attackSize = Math.min(availableResources, 40);
+        if (exactKillDamage <= availableResources) {
+          attackSize = Math.min(attackSize, exactKillDamage + 2);
+        } else {
+          attackSize = Math.min(availableResources, 40);
+        }
       }
     }
     
-    if (estimate) {
-      // If enemy can upgrade, attack harder to prevent upgrade
-      if (resourceTracker.canAffordUpgradeForGame(gameId, target.playerId)) {
-        attackSize = Math.min(availableResources, Math.max(attackSize, 40));
-      }
-      
-      // If enemy has low resources, smaller attack might be enough
-      if (estimate.estimatedResources < estimate.resourceGeneration * 0.5) {
-        attackSize = Math.min(attackSize, 20);
-      }
-      
-      // If enemy has high resources, attack harder
-      if (estimate.estimatedResources > estimate.resourceGeneration * 2) {
-        attackSize = Math.min(availableResources, Math.max(attackSize, 35));
-      }
-      
-      // Adjust based on enemy HP (finish them off)
-      if (target.hp < 30) {
-        attackSize = Math.min(attackSize, target.hp + target.armor + 5);
-      }
-    }
+    // Final bounds: minimum 5, maximum available resources
+    // But prioritize exact kill damage if possible
+    const finalAttackSize = Math.max(5, Math.min(attackSize, availableResources));
     
-    return Math.max(5, Math.min(attackSize, availableResources));
+    Logger.debug('Final attack size calculation', {
+      playerId: target.playerId,
+      exactKillDamage,
+      calculatedSize: attackSize,
+      finalSize: finalAttackSize,
+      availableResources,
+      targetHP: target.hp,
+      targetArmor: target.armor,
+      willKill: finalAttackSize >= exactKillDamage,
+      overkill: finalAttackSize > exactKillDamage ? finalAttackSize - exactKillDamage : 0
+    });
+    
+    return finalAttackSize;
   }
 
   private getUpgradeCost(level: number): number {
@@ -971,7 +1066,39 @@ export class KingdomWarsHandler {
         continue;
       }
       
+      // Calculate exact kill damage (HP + armor)
+      const exactKillDamage = enemy.hp + enemy.armor;
+      
+      // Generate attack sizes, prioritizing exact kill damage
+      const attackSizes = new Set<number>();
+      
+      // Always include exact kill damage if affordable
+      if (exactKillDamage > 0 && exactKillDamage <= resources) {
+        attackSizes.add(exactKillDamage);
+        attackSizes.add(exactKillDamage + 1); // Small buffer
+        attackSizes.add(exactKillDamage + 2); // Safety margin
+      }
+      
+      // Add standard attack sizes (10, 20, 30)
       for (let troops = 10; troops <= Math.min(30, resources); troops += 10) {
+        attackSizes.add(troops);
+      }
+      
+      // Add larger attacks if we can't kill with standard sizes
+      if (exactKillDamage > 30 && exactKillDamage <= resources) {
+        // Add sizes around kill damage
+        for (let offset = -10; offset <= 10; offset += 10) {
+          const size = exactKillDamage + offset;
+          if (size > 0 && size <= resources) {
+            attackSizes.add(size);
+          }
+        }
+      }
+      
+      // Convert to array and sort
+      const sortedSizes = Array.from(attackSizes).sort((a, b) => a - b);
+      
+      for (const troops of sortedSizes) {
         possibleActions.push({
           type: 'attack',
           targetId: enemy.playerId,

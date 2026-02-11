@@ -260,7 +260,39 @@ export class MCTSKingdomWars {
         continue;
       }
       
+      // Calculate exact kill damage (HP + armor)
+      const exactKillDamage = enemy.hp + enemy.armor;
+      
+      // Generate attack sizes, prioritizing exact kill damage
+      const attackSizes = new Set<number>();
+      
+      // Always include exact kill damage if affordable
+      if (exactKillDamage > 0 && exactKillDamage <= resources) {
+        attackSizes.add(exactKillDamage);
+        attackSizes.add(exactKillDamage + 1); // Small buffer
+        attackSizes.add(exactKillDamage + 2); // Safety margin
+      }
+      
+      // Add standard attack sizes (5, 10, 15, 20, 25, 30)
       for (let troops = 5; troops <= Math.min(30, resources); troops += 5) {
+        attackSizes.add(troops);
+      }
+      
+      // Add larger attacks if we can't kill with standard sizes
+      if (exactKillDamage > 30 && exactKillDamage <= resources) {
+        // Add sizes around kill damage
+        for (let offset = -5; offset <= 5; offset += 5) {
+          const size = exactKillDamage + offset;
+          if (size > 0 && size <= resources) {
+            attackSizes.add(size);
+          }
+        }
+      }
+      
+      // Convert to array and sort
+      const sortedSizes = Array.from(attackSizes).sort((a, b) => a - b);
+      
+      for (const troops of sortedSizes) {
         possibleActions.push({
           type: 'attack',
           targetId: enemy.playerId,
