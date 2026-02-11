@@ -569,6 +569,66 @@ export class GameTheoryNegotiation {
       }
     }
   }
+
+  /**
+   * Check if player is our ally (has cooperated with us)
+   */
+  isAlly(playerId: number): boolean {
+    const record = this.allianceHistory.get(playerId);
+    return record ? record.cooperated && !record.betrayed : false;
+  }
+
+  /**
+   * Check if player has betrayed us
+   */
+  hasBetrayed(playerId: number): boolean {
+    const record = this.allianceHistory.get(playerId);
+    return record ? record.betrayed : false;
+  }
+
+  /**
+   * Get alliance record for player
+   */
+  getAllianceRecord(playerId: number): AllianceRecord | null {
+    return this.allianceHistory.get(playerId) || null;
+  }
+
+  /**
+   * Get game history for player
+   */
+  getGameHistory(playerId: number): GameHistory | null {
+    return this.gameHistory.get(playerId) || null;
+  }
+
+  /**
+   * Get cooperation level (0-1, higher = more cooperative)
+   */
+  getCooperationLevel(playerId: number): number {
+    const history = this.gameHistory.get(playerId);
+    if (!history) return 0.5; // Neutral if no history
+    
+    const totalInteractions = history.cooperationCount + history.defectionCount;
+    if (totalInteractions === 0) return 0.5;
+    
+    return history.cooperationCount / totalInteractions;
+  }
+
+  /**
+   * Predict if enemy will attack us (based on history)
+   */
+  willLikelyAttackUs(playerId: number): boolean {
+    const history = this.gameHistory.get(playerId);
+    if (!history) return false;
+    
+    // If they recently attacked us, likely to attack again
+    if (history.turnsSinceLastAttack < 2) {
+      return true;
+    }
+    
+    // If they have high defection rate, likely to attack
+    const cooperationLevel = this.getCooperationLevel(playerId);
+    return cooperationLevel < 0.3;
+  }
 }
 
 // Type definitions

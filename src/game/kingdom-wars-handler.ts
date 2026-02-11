@@ -406,27 +406,32 @@ export class KingdomWarsHandler {
       }
     }
     
-    // Attack best target using resource estimates
+      // Attack best target using resource estimates and Game Theory history
     if (remainingResources > 0) {
-      const target = this.findBestAttackTargetWithResources(
+      const target = this.findBestAttackTargetWithHistory(
         enemyTowers, 
         playerTower,
-        this.resourceTracker
+        this.resourceTracker,
+        this.gameTheory
       );
-      Logger.debug('Attack target evaluation (with resource estimates)', target ? {
+      Logger.debug('Attack target evaluation (with history and resources)', target ? {
         targetId: target.playerId,
         targetHp: target.hp,
         targetArmor: target.armor,
         availableResources: remainingResources,
-        enemyEstimate: this.resourceTracker.getEstimate(target.playerId)
+        enemyEstimate: this.resourceTracker.getEstimate(target.playerId),
+        isAlly: this.gameTheory?.isAlly(target.playerId) || false,
+        hasBetrayed: this.gameTheory?.hasBetrayed(target.playerId) || false,
+        cooperationLevel: this.gameTheory?.getCooperationLevel(target.playerId) || 0.5
       } : 'No valid target');
       
       if (target) {
-        // Use resource estimates to determine optimal attack size
+        // Use resource estimates and history to determine optimal attack size
         const attackAmount = this.calculateOptimalAttackSize(
           target,
           remainingResources,
-          this.resourceTracker
+          this.resourceTracker,
+          this.gameTheory
         );
         if (attackAmount > 0) {
           actions.push({
@@ -586,21 +591,59 @@ export class KingdomWarsHandler {
   }
 
   /**
-   * Find best attack target using resource estimates
+   * Find best attack target using resource estimates and Game Theory history
    */
-  private findBestAttackTargetWithResources(
+  private findBestAttackTargetWithHistory(
     enemyTowers: Tower[],
     playerTower: Tower,
-    resourceTracker: EnemyResourceTracker
+    resourceTracker: EnemyResourceTracker,
+    gameTheory: GameTheoryNegotiation | null
   ): Tower | null {
     let bestTarget: Tower | null = null;
-    let bestScore = Infinity;
+    let bestScore: number = Infinity;
     
     enemyTowers.forEach(enemy => {
       const estimate = resourceTracker.getEstimate(enemy.playerId);
       
       // Base score: HP + armor (lower is better)
       let score = enemy.hp + enemy.armor;
+      
+      // Game Theory history adjustments
+      if (gameTheory) {
+        // AVOID attacking allies (high penalty)
+        if (gameTheory.isAlly(enemy.playerId)) {
+          score += 200; // Very low priority (high score) - avoid attacking allies
+          Logger.debug('Avoiding ally in combat', {
+            playerId: enemy.playerId,
+            allianceTurns: gameTheory.getAllianceRecord(enemy.playerId)?.allianceTurns || 0
+          });
+        }
+        
+        // PRIORITIZE enemies who betrayed us (high priority)
+        if (gameTheory.hasBetrayed(enemy.playerId)) {
+          score -= 100; // Very high priority (low score) - attack betrayers
+          Logger.debug('Prioritizing betrayer in combat', {
+            playerId: enemy.playerId
+          });
+        }
+        
+        // Use cooperation history to predict behavior
+        const cooperationLevel = gameTheory.getCooperationLevel(enemy.playerId);
+        const willAttackUs = gameTheory.willLikelyAttackUs(enemy.playerId);
+        
+        if (willAttackUs) {
+          // Enemy likely to attack us - prioritize them (preemptive strike)
+          score -= 40;
+          Logger.debug('Enemy likely to attack us', {
+            playerId: enemy.playerId,
+            cooperationLevel,
+            turnsSinceLastAttack: gameTheory.getGameHistory(enemy.playerId)?.turnsSinceLastAttack || Infinity
+          });
+        } else if (cooperationLevel > 0.7) {
+          // High cooperation - lower priority (but not an ally)
+          score += 30;
+        }
+      }
       
       // Adjust based on resource estimates
       if (estimate) {
@@ -626,26 +669,67 @@ export class KingdomWarsHandler {
       }
     });
     
-    return bestTarget || this.findBestAttackTarget(enemyTowers, playerTower);
+    // If no target found, fall back to basic targeting
+    if (bestTarget === null) {
+      return this.findBestAttackTarget(enemyTowers, playerTower);
+    }
+    
+    // If all enemies are allies, log warning but attack anyway
+    const finalTarget: Tower = bestTarget;
+    if (gameTheory && gameTheory.isAlly(finalTarget.playerId)) {
+      Logger.warn('All enemies are allies, attacking anyway', {
+        targetId: finalTarget.playerId
+      });
+    }
+    
+    return finalTarget;
   }
 
   /**
-   * Calculate optimal attack size based on enemy resources and state
+   * Calculate optimal attack size based on enemy resources, state, and history
    */
   private calculateOptimalAttackSize(
     target: Tower,
     availableResources: number,
-    resourceTracker: EnemyResourceTracker
+    resourceTracker: EnemyResourceTracker,
+    gameTheory: GameTheoryNegotiation | null
   ): number {
     const estimate = resourceTracker.getEstimate(target.playerId);
     
     // Base attack: reasonable portion of resources
     let attackSize = Math.min(availableResources, 30);
     
+    // Game Theory history adjustments
+    if (gameTheory) {
+      // If enemy betrayed us, attack harder (retaliation)
+      if (gameTheory.hasBetrayed(target.playerId)) {
+        attackSize = Math.min(availableResources, 45); // Larger attack
+        Logger.debug('Attacking betrayer with increased force', {
+          playerId: target.playerId,
+          attackSize
+        });
+      }
+      
+      // If enemy is our ally, attack smaller (minimal damage if we must attack)
+      if (gameTheory.isAlly(target.playerId)) {
+        attackSize = Math.min(attackSize, 15); // Smaller attack
+        Logger.debug('Attacking ally with reduced force', {
+          playerId: target.playerId,
+          attackSize,
+          allianceTurns: gameTheory.getAllianceRecord(target.playerId)?.allianceTurns || 0
+        });
+      }
+      
+      // If enemy is likely to attack us, attack harder (preemptive)
+      if (gameTheory.willLikelyAttackUs(target.playerId)) {
+        attackSize = Math.min(availableResources, 40);
+      }
+    }
+    
     if (estimate) {
       // If enemy can upgrade, attack harder to prevent upgrade
       if (resourceTracker.canAffordUpgrade(target.playerId)) {
-        attackSize = Math.min(availableResources, 40);
+        attackSize = Math.min(availableResources, Math.max(attackSize, 40));
       }
       
       // If enemy has low resources, smaller attack might be enough
@@ -655,7 +739,7 @@ export class KingdomWarsHandler {
       
       // If enemy has high resources, attack harder
       if (estimate.estimatedResources > estimate.resourceGeneration * 2) {
-        attackSize = Math.min(availableResources, 35);
+        attackSize = Math.min(availableResources, Math.max(attackSize, 35));
       }
       
       // Adjust based on enemy HP (finish them off)
