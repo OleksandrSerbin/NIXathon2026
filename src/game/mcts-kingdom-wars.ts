@@ -5,6 +5,8 @@ import {
 } from '../types/kingdom-wars';
 import { TimeManager } from '../utils/time-manager';
 import { Logger } from '../utils/logger';
+import { GameTheoryNegotiation } from './game-theory-negotiation';
+import { EnemyResourceTracker } from './enemy-resource-tracker';
 
 /**
  * MCTS Node for Kingdom Wars
@@ -70,6 +72,9 @@ export class MCTSKingdomWars {
   private playerTower!: Tower; // Initialized in calculateBestActions
   private enemyTowers!: Tower[]; // Initialized in calculateBestActions
   private turn!: number; // Initialized in calculateBestActions
+  private gameTheory: GameTheoryNegotiation | null = null;
+  private resourceTracker: EnemyResourceTracker | null = null;
+  private gameId: number = 0;
 
   constructor(
     iterations: number = 500,
@@ -84,12 +89,24 @@ export class MCTSKingdomWars {
   }
 
   /**
+   * Set Game Theory and Resource Tracker for better decision making
+   */
+  setHelpers(
+    gameTheory: GameTheoryNegotiation | null,
+    resourceTracker: EnemyResourceTracker | null
+  ): void {
+    this.gameTheory = gameTheory;
+    this.resourceTracker = resourceTracker;
+  }
+
+  /**
    * Calculate best combat actions using MCTS
    */
   calculateBestActions(request: CombatRequest): CombatResponseAction[] {
     this.playerTower = request.playerTower;
     this.enemyTowers = request.enemyTowers;
     this.turn = request.turn;
+    this.gameId = request.gameId;
 
     if (this.timeManager) {
       this.timeManager.reset();
@@ -239,10 +256,20 @@ export class MCTSKingdomWars {
     // Generate possible actions
     const possibleActions: CombatResponseAction[] = [];
 
-    // Upgrade action
+    // Upgrade action - consider saving resources for upgrades
     const upgradeCost = this.getUpgradeCost(playerTower.level);
-    if (resources >= upgradeCost && this.shouldUpgrade(playerTower, request.enemyTowers, request.turn)) {
+    const shouldUpgradeNow = this.shouldUpgrade(playerTower, request.enemyTowers, request.turn);
+    
+    // If we can afford upgrade and should upgrade, add it
+    if (resources >= upgradeCost && shouldUpgradeNow) {
       possibleActions.push({ type: 'upgrade' });
+    }
+    
+    // Also consider saving resources for future upgrades
+    // If we're close to upgrade cost, consider saving some resources
+    if (upgradeCost > resources && resources >= upgradeCost * 0.6) {
+      // We're 60%+ of the way to upgrade, consider saving
+      // This will be handled by action combinations (not spending all resources)
     }
 
     // Armor actions (different amounts)
@@ -253,11 +280,28 @@ export class MCTSKingdomWars {
     }
 
     // Attack actions (different targets and amounts)
-    // Skip dead enemies (HP <= 0)
+    // Skip dead enemies (HP <= 0) and allies
     for (const enemy of request.enemyTowers) {
       // Skip dead enemies
       if (enemy.hp <= 0) {
         continue;
+      }
+      
+      // Skip allies (Game Theory trust system)
+      // Give trust credit at beginning (turn 0-1), use history from turn 2+
+      let isAlly = false;
+      if (this.gameTheory) {
+        // Pass turn to isAlly for trust system
+        isAlly = this.gameTheory.isAlly(this.gameId, enemy.playerId, request.turn);
+      }
+      
+      if (isAlly) {
+        Logger.debug('MCTS: Skipping attack on ally', {
+          playerId: enemy.playerId,
+          turn: request.turn,
+          allianceTurns: this.gameTheory?.getAllianceRecord(this.gameId, enemy.playerId)?.allianceTurns || 0
+        });
+        continue; // Don't attack allies
       }
       
       // Calculate exact kill damage (HP + armor)
@@ -266,19 +310,29 @@ export class MCTSKingdomWars {
       // Generate attack sizes, prioritizing exact kill damage
       const attackSizes = new Set<number>();
       
-      // Always include exact kill damage if affordable
+      // PRIORITY: Always include exact kill damage if affordable (avoid overkill)
       if (exactKillDamage > 0 && exactKillDamage <= resources) {
-        attackSizes.add(exactKillDamage);
+        attackSizes.add(exactKillDamage); // Exact kill
         attackSizes.add(exactKillDamage + 1); // Small buffer
         attackSizes.add(exactKillDamage + 2); // Safety margin
+        // Don't add larger sizes - avoid overkill!
       }
       
-      // Add standard attack sizes (5, 10, 15, 20, 25, 30)
-      for (let troops = 5; troops <= Math.min(30, resources); troops += 5) {
-        attackSizes.add(troops);
+      // Add standard attack sizes only if we can't kill with exact damage
+      if (exactKillDamage > resources || exactKillDamage === 0) {
+        // Can't afford exact kill or already dead, use standard sizes
+        for (let troops = 5; troops <= Math.min(30, resources); troops += 5) {
+          attackSizes.add(troops);
+        }
+      } else {
+        // Can afford exact kill, but also include smaller sizes for flexibility
+        // (in case we want to save resources)
+        for (let troops = 5; troops < exactKillDamage && troops <= resources; troops += 5) {
+          attackSizes.add(troops);
+        }
       }
       
-      // Add larger attacks if we can't kill with standard sizes
+      // Add larger attacks only if exact kill is not affordable
       if (exactKillDamage > 30 && exactKillDamage <= resources) {
         // Add sizes around kill damage
         for (let offset = -5; offset <= 5; offset += 5) {
@@ -316,6 +370,20 @@ export class MCTSKingdomWars {
             combinations.push([action, secondAction]);
           }
         }
+      }
+    }
+    
+    // Consider saving resources for upgrades
+    // If we're close to upgrade cost, add option to save resources
+    const nextUpgradeCost = this.getUpgradeCost(playerTower.level);
+    if (nextUpgradeCost > resources && resources >= nextUpgradeCost * 0.6) {
+      // We're 60%+ of the way to upgrade, consider saving
+      // Add empty action (save all) or minimal actions
+      combinations.push([]); // Save all resources
+      
+      // Also add minimal attack/armor to save most resources
+      if (possibleActions.some(a => a.type === 'armor')) {
+        combinations.push([{ type: 'armor', amount: 5 }]); // Minimal armor
       }
     }
 
@@ -445,6 +513,15 @@ export class MCTSKingdomWars {
     score += playerTower.level * 50;
     score += (playerTower.resources || 0) * 2;
 
+    // Bonus for saving resources when close to upgrade
+    const upgradeCost = this.getUpgradeCost(playerTower.level);
+    const resources = playerTower.resources || 0;
+    if (upgradeCost > resources && resources >= upgradeCost * 0.6) {
+      // We're 60%+ of the way to upgrade, bonus for saving
+      const progressToUpgrade = resources / upgradeCost;
+      score += progressToUpgrade * 30; // Bonus for being close to upgrade
+    }
+
     // Subtract enemy strength
     for (const enemy of enemies) {
       score -= enemy.hp * 8;
@@ -490,7 +567,19 @@ export class MCTSKingdomWars {
     const isBehind = playerTower.level < avgEnemyLevel;
     const isSafe = playerTower.hp > 50;
     const isEarlyGame = turn < 20;
-    return (isEarlyGame || isBehind) && isSafe;
+    const isMidGame = turn >= 20 && turn < 30;
+    
+    // More aggressive upgrade strategy:
+    // - Early game: Always upgrade if safe
+    // - Mid game: Upgrade if behind or safe
+    // - Late game: Upgrade if behind (but less priority)
+    if (isEarlyGame) {
+      return isSafe; // Early game: upgrade if safe
+    } else if (isMidGame) {
+      return (isBehind || isSafe) && isSafe; // Mid game: upgrade if behind or safe
+    } else {
+      return isBehind && isSafe; // Late game: only if behind
+    }
   }
 
   private shouldBuildArmor(playerTower: Tower, turn: number): boolean {

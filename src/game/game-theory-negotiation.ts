@@ -621,12 +621,47 @@ export class GameTheoryNegotiation {
 
   /**
    * Check if player is our ally (has cooperated with us) in specific game
+   * Trust system: Give initial trust at beginning (turn 0-1), use history from turn 2+
    */
-  isAlly(gameId: number, playerId: number): boolean {
+  isAlly(gameId: number, playerId: number, turn?: number): boolean {
     const allianceHistory = this.allianceHistories.get(gameId);
     if (!allianceHistory) return false;
     const record = allianceHistory.get(playerId);
-    return record ? record.cooperated && !record.betrayed : false;
+    
+    if (!record) return false;
+    
+    // Turn 0-1: Give initial trust credit to allies (if we formed alliance)
+    if (turn !== undefined && turn <= 1) {
+      // If we formed alliance, give initial trust
+      if (record.cooperated && !record.betrayed) {
+        Logger.debug('Giving initial trust to ally', {
+          playerId,
+          turn,
+          allianceTurns: record.allianceTurns
+        });
+        return true;
+      }
+      return false;
+    }
+    
+    // Turn 2+: Use history to determine if ally is true
+    // Check if they've cooperated and not betrayed us
+    if (record.cooperated && !record.betrayed) {
+      // Additional check: if they've attacked us recently, they're not a true ally
+      const gameHistory = this.gameHistories.get(gameId);
+      const history = gameHistory?.get(playerId);
+      if (history && history.turnsSinceLastAttack < 2) {
+        // They attacked us recently, not a true ally
+        Logger.debug('Ally attacked us recently, not trusting', {
+          playerId,
+          turnsSinceLastAttack: history.turnsSinceLastAttack
+        });
+        return false;
+      }
+      return true;
+    }
+    
+    return false;
   }
 
   /**

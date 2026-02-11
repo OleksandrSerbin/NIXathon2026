@@ -287,6 +287,10 @@ export class KingdomWarsHandler {
           gameId: request.gameId,
           turn: request.turn
         });
+        
+        // Pass Game Theory and Resource Tracker to MCTS for better decisions
+        this.mcts.setHelpers(this.gameTheory, this.resourceTracker);
+        
         const mctsActions = this.mcts.calculateBestActions(planningRequest);
         const spent = mctsActions.reduce((sum, action) => {
           return sum + this.getActionCost(action, request.playerTower.level);
@@ -477,7 +481,8 @@ export class KingdomWarsHandler {
         enemyTowers, 
         playerTower,
         this.resourceTracker,
-        this.gameTheory
+        this.gameTheory,
+        request.turn
       );
       Logger.debug('Attack target evaluation (with history and resources)', target ? {
         targetId: target.playerId,
@@ -485,7 +490,7 @@ export class KingdomWarsHandler {
         targetArmor: target.armor,
         availableResources: remainingResources,
         enemyEstimate: this.resourceTracker.getEstimateForGame(request.gameId, target.playerId),
-        isAlly: this.gameTheory?.isAlly(request.gameId, target.playerId) || false,
+        isAlly: this.gameTheory?.isAlly(request.gameId, target.playerId, request.turn) || false,
         hasBetrayed: this.gameTheory?.hasBetrayed(request.gameId, target.playerId) || false,
         cooperationLevel: this.gameTheory?.getCooperationLevel(request.gameId, target.playerId) || 0.5
       } : 'No valid target');
@@ -497,7 +502,8 @@ export class KingdomWarsHandler {
           target,
           remainingResources,
           this.resourceTracker,
-          this.gameTheory
+          this.gameTheory,
+          request.turn
         );
         if (attackAmount > 0) {
           actions.push({
@@ -756,7 +762,8 @@ export class KingdomWarsHandler {
     enemyTowers: Tower[],
     playerTower: Tower,
     resourceTracker: EnemyResourceTracker,
-    gameTheory: GameTheoryNegotiation | null
+    gameTheory: GameTheoryNegotiation | null,
+    turn: number
   ): Tower | null {
     let bestTarget: Tower | null = null;
     let bestScore: number = Infinity;
@@ -775,7 +782,7 @@ export class KingdomWarsHandler {
       // Game Theory history adjustments
       if (gameTheory) {
         // AVOID attacking allies (high penalty)
-        if (gameTheory.isAlly(gameId, enemy.playerId)) {
+        if (gameTheory.isAlly(gameId, enemy.playerId, turn)) {
           score += 200; // Very low priority (high score) - avoid attacking allies
           Logger.debug('Avoiding ally in combat', {
             playerId: enemy.playerId,
@@ -840,7 +847,7 @@ export class KingdomWarsHandler {
     
     // If all enemies are allies, log warning but attack anyway
     const finalTarget: Tower = bestTarget;
-    if (gameTheory && gameTheory.isAlly(gameId, finalTarget.playerId)) {
+    if (gameTheory && gameTheory.isAlly(gameId, finalTarget.playerId, turn)) {
       Logger.warn('All enemies are allies, attacking anyway', {
         targetId: finalTarget.playerId
       });
@@ -859,7 +866,8 @@ export class KingdomWarsHandler {
     target: Tower,
     availableResources: number,
     resourceTracker: EnemyResourceTracker,
-    gameTheory: GameTheoryNegotiation | null
+    gameTheory: GameTheoryNegotiation | null,
+    turn: number
   ): number {
     const estimate = resourceTracker.getEstimateForGame(gameId, target.playerId);
     
@@ -973,7 +981,7 @@ export class KingdomWarsHandler {
       }
       
       // If enemy is our ally, attack smaller (minimal damage if we must attack)
-      if (gameTheory.isAlly(gameId, target.playerId)) {
+      if (gameTheory.isAlly(gameId, target.playerId, turn)) {
         attackSize = Math.min(attackSize, 15); // Smaller attack
         Logger.debug('Attacking ally with reduced force', {
           playerId: target.playerId,
