@@ -633,20 +633,21 @@ export class MCTSKingdomWars {
     const isBehind = level < avgEnemyLevel;
     const isVeryBehind = level < avgEnemyLevel - 0.5;
     
-    // FIXED: Lower HP thresholds for upgrades (60/55/50 → 50/45/40)
-    // CRITICAL: Very early game (turns 0-5) - upgrade ASAP if safe
-    if (turn <= 5 && hp > 50) {
-      return true; // Aggressive early upgrade
+    // PROACTIVE LEVELING: Upgrade ASAP in very early game to maximize resource generation
+    // CRITICAL: Very early game (turns 1-3) - upgrade ASAP if HP > 40 (PROACTIVE)
+    if (turn <= 3 && hp > 40) {
+      return true; // PROACTIVE: Upgrade immediately in turns 1-3 to maximize income
     }
     
-    // HIGH PRIORITY: Early game (turns 6-10) - upgrade if safe
-    if (turn <= 10 && hp > 45) {
-      return true; // Upgrade early for resource generation advantage
+    // HIGH PRIORITY: Early game (turns 4-10) - upgrade if safe OR at same level (PROACTIVE)
+    const isAtSameLevel = level <= avgEnemyLevel;
+    if (turn <= 10 && (hp > 45 || isAtSameLevel)) {
+      return true; // PROACTIVE: Upgrade early for resource generation advantage
     }
     
     // MEDIUM PRIORITY: Mid game (turns 11-20) - upgrade if safe or behind
     if (turn <= 20 && hp > 40) {
-      return isBehind || hp > 50; // Upgrade if behind or very safe
+      return isBehind || hp > 45; // Upgrade if behind or safe
     }
     
     // LATE GAME: Only upgrade if very behind (resource generation critical)

@@ -491,24 +491,36 @@ export class KingdomWarsHandler {
     const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
     // Removed debug logging for performance (100-150 req/s)
     
-    // FIXED: More aggressive upgrade - lower HP thresholds and upgrade when behind
-    // Only skip upgrade if HP is critical (already handled above)
-    const minSafeHPForUpgrade = turn <= 5 ? 50 : turn <= 10 ? 45 : 40; // Lowered from 60/55/50
+    // PROACTIVE LEVELING: Upgrade ASAP in early game to maximize resource generation
+    // Very early game (turns 1-3): Upgrade if HP > 40 and can afford (PROACTIVE)
+    // Early game (turns 4-10): Upgrade if HP > 45 and can afford (PROACTIVE)
+    // Mid game (turns 11+): Upgrade if HP > 40 and safe (PROACTIVE)
+    const minSafeHPForUpgrade = turn <= 3 ? 40 : turn <= 5 ? 45 : turn <= 10 ? 45 : 40; // More proactive early game
     const isSafeForUpgrade = (futureState.expectedHP > minSafeHPForUpgrade || 
                             (turn <= 10 && playerTower.hp > 45)) && !isCriticalHP;
     
-    // CRITICAL FIX: Upgrade when behind in levels (even if HP is lower)
-    // FIXED: Lower HP thresholds for "behind" upgrades (40/35 → 35/30)
+    // PROACTIVE: Upgrade when behind in levels OR when we can afford it (not just when behind)
     const avgEnemyLevel = enemyTowers.length > 0 
       ? enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length 
       : playerTower.level;
     const isBehind = playerTower.level < avgEnemyLevel - 0.5;
     const isVeryBehind = playerTower.level < avgEnemyLevel - 1;
+    const isAtSameLevel = playerTower.level <= avgEnemyLevel; // At same or lower level
     
-    // Upgrade if: (safe AND shouldUpgrade) OR (behind AND HP > 35) OR (very behind AND HP > 30)
-    const shouldUpgradeNow = (isSafeForUpgrade && shouldUpgrade) || 
-                            (isBehind && playerTower.hp > 35) || 
-                            (isVeryBehind && playerTower.hp > 30);
+    // PROACTIVE UPGRADE LOGIC:
+    // 1. Very early game (turns 1-3): Upgrade if HP > 40 and can afford (PROACTIVE - maximize income)
+    // 2. Early game (turns 4-10): Upgrade if HP > 45 and can afford OR behind
+    // 3. Mid/Late game: Upgrade if safe OR behind OR very behind
+    const isVeryEarlyGame = turn <= 3;
+    const isEarlyGame = turn <= 10;
+    const shouldUpgradeProactively = isVeryEarlyGame && playerTower.hp > 40; // PROACTIVE: Upgrade ASAP in turns 1-3
+    const shouldUpgradeEarly = isEarlyGame && (playerTower.hp > 45 || isAtSameLevel); // PROACTIVE: Upgrade in early game
+    
+    const shouldUpgradeNow = shouldUpgradeProactively || // PROACTIVE: Very early game
+                            shouldUpgradeEarly || // PROACTIVE: Early game
+                            (isSafeForUpgrade && shouldUpgrade) || // Safe to upgrade
+                            (isBehind && playerTower.hp > 35) || // Behind in levels
+                            (isVeryBehind && playerTower.hp > 30); // Very behind in levels
     
     if (remainingResources >= upgradeCost && shouldUpgradeNow) {
       actions.push({ type: 'upgrade' });
@@ -628,19 +640,23 @@ export class KingdomWarsHandler {
     const upgradeCostForNext = this.getUpgradeCost(playerTower.level);
     const resourcesNeededForUpgrade = Math.max(0, upgradeCostForNext - remainingResources);
     
-    // FIXED: Dynamic resource buffer - save 70-80% for upgrades in early game
-    // - Early game (turns 1-10): Save 70-80% of resources for upgrades (base buffer: 5-10)
-    // - Mid game (turns 11-20): Save 50-60% (base buffer: 10-15)
+    // PROACTIVE LEVELING: Save resources aggressively for upgrades, especially in very early game
+    // - Very early game (turns 1-3): Save 80-90% for upgrades (base buffer: 3) - PROACTIVE LEVELING
+    // - Early game (turns 4-10): Save 70-80% for upgrades (base buffer: 5)
+    // - Mid game (turns 11-20): Save 50-60% (base buffer: 10)
     // - Late game (turns 21+): Save 40-50% (base buffer: 15)
     // - If close to upgrade (< 40 resources away): Save more (upgrade cost - current resources + 5)
-    // - If very close (< 20 resources away): Save minimal (5 resources) to allow upgrade next turn
-    const isEarlyGame = turn <= 10;
-    const isMidGame = turn > 10 && turn <= 20;
-    const baseBuffer = isEarlyGame 
-      ? 5  // Early game: Save 70-80% for upgrades (minimal buffer)
-      : isMidGame 
-        ? 10 // Mid game: Save 50-60% (moderate buffer)
-        : 15; // Late game: Save 40-50% (higher buffer)
+    // - If very close (< 20 resources away): Save minimal (3-5 resources) to allow upgrade next turn
+    const isVeryEarlyGameForBuffer = turn <= 3;
+    const isEarlyGameForBuffer = turn <= 10;
+    const isMidGameForBuffer = turn > 10 && turn <= 20;
+    const baseBuffer = isVeryEarlyGameForBuffer 
+      ? 3  // Very early game: Save 80-90% for upgrades (minimal buffer) - PROACTIVE LEVELING
+      : isEarlyGameForBuffer 
+        ? 5  // Early game: Save 70-80% for upgrades (minimal buffer)
+        : isMidGameForBuffer 
+          ? 10 // Mid game: Save 50-60% (moderate buffer)
+          : 15; // Late game: Save 40-50% (higher buffer)
     
     const closeToUpgrade = resourcesNeededForUpgrade <= 40;
     const veryCloseToUpgrade = resourcesNeededForUpgrade <= 20;
@@ -824,9 +840,12 @@ export class KingdomWarsHandler {
       return false;
     }
     
-    // FIXED: Lower HP thresholds for early game upgrades (50/45/40 instead of 60/55/50)
+    // PROACTIVE LEVELING: Lower HP thresholds for very early game upgrades
+    // Very early game (turns 1-3): Upgrade if HP > 40 (PROACTIVE - maximize income ASAP)
+    // Early game (turns 4-10): Upgrade if HP > 45
+    // Mid/Late game: Upgrade if HP > 40
     const hp = playerTower.hp;
-    const minHP = turn <= 5 ? 50 : turn <= 10 ? 45 : 40; // More aggressive early game
+    const minHP = turn <= 3 ? 40 : turn <= 10 ? 45 : 40; // PROACTIVE: Very early game (turns 1-3) upgrade at HP > 40
     if (hp <= minHP) {
       return false;
     }
@@ -886,13 +905,16 @@ export class KingdomWarsHandler {
         }
       });
 
-      // FIXED: Lower HP thresholds for early game upgrades (50/45/40 instead of 60/55/50)
+      // PROACTIVE LEVELING: Lower HP thresholds for very early game upgrades
+      // Very early game (turns 1-3): Upgrade if HP > 40 (PROACTIVE - maximize income ASAP)
+      // Early game (turns 4-10): Upgrade if HP > 45
+      // Mid/Late game: Upgrade if HP > 40
       // 1. We'll still be safe (HP threshold based on turn)
-      const minSafeHP = turn <= 5 ? 50 : turn <= 10 ? 45 : 40;
+      const minSafeHP = turn <= 3 ? 40 : turn <= 10 ? 45 : 40; // PROACTIVE: Very early game upgrade at HP > 40
       const willBeSafe = futureWithUpgrade.expectedHP > minSafeHP;
       
-      // 2. We'll have enough resources for next 5 turns (lower threshold early game)
-      const minResources = turn <= 10 ? 10 : 15; // More aggressive early game (reduced from 15/20)
+      // 2. We'll have enough resources for next 5 turns (lower threshold very early game)
+      const minResources = turn <= 3 ? 5 : turn <= 10 ? 10 : 15; // PROACTIVE: Very early game needs minimal resources
       const willHaveResources = futureWithUpgrade.minResources >= minResources;
       
       // 3. The upgrade provides benefit (more resource generation or better survival)
@@ -956,21 +978,22 @@ export class KingdomWarsHandler {
     const avgEnemyLevel = enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length;
     const isBehind = level < avgEnemyLevel;
     const isVeryBehind = level < avgEnemyLevel - 0.5; // More than 0.5 levels behind
+    const isAtSameLevel = level <= avgEnemyLevel; // At same or lower level
     
-    // FIXED: Lower HP thresholds for upgrades (60/55/50 → 50/45/40)
-    // CRITICAL: Very early game (turns 0-5) - upgrade ASAP if safe
-    if (turn <= 5 && hp > 50) {
-      return true; // Aggressive early upgrade
+    // PROACTIVE LEVELING: Upgrade ASAP in very early game to maximize resource generation
+    // CRITICAL: Very early game (turns 1-3) - upgrade ASAP if HP > 40 (PROACTIVE)
+    if (turn <= 3 && hp > 40) {
+      return true; // PROACTIVE: Upgrade immediately in turns 1-3 to maximize income
     }
     
-    // HIGH PRIORITY: Early game (turns 6-10) - upgrade if safe
-    if (turn <= 10 && hp > 45) {
-      return true; // Upgrade early for resource generation advantage
+    // HIGH PRIORITY: Early game (turns 4-10) - upgrade if safe OR at same level (PROACTIVE)
+    if (turn <= 10 && (hp > 45 || isAtSameLevel)) {
+      return true; // PROACTIVE: Upgrade early for resource generation advantage
     }
     
     // MEDIUM PRIORITY: Mid game (turns 11-20) - upgrade if safe or behind
     if (turn <= 20 && hp > 40) {
-      return isBehind || hp > 50; // Upgrade if behind or very safe
+      return isBehind || hp > 45; // Upgrade if behind or safe
     }
     
     // LATE GAME: Only upgrade if very behind (resource generation critical)
