@@ -216,9 +216,32 @@ export class MultiTurnPlanner {
   private evaluateState(state: SimulatedState): number {
     let score = 0;
 
-    // Our state (positive)
-    score += state.playerTower.hp * 10;
-    score += state.playerTower.armor * 5;
+    // Our state (positive) - PRIORITY: Survival > Defense > Level > Resources
+    const hp = state.playerTower.hp;
+    const armor = state.playerTower.armor || 0;
+    
+    // HP scoring (survival priority - heavily penalize low HP)
+    if (hp <= 0) {
+      score -= 100000; // Death is catastrophic
+    } else if (hp < 30) {
+      score += hp * 50; // CRITICAL: Very low HP
+    } else if (hp < 50) {
+      score += hp * 30; // HIGH: Low HP
+    } else if (hp < 70) {
+      score += hp * 20; // MEDIUM: Moderate HP
+    } else {
+      score += hp * 10; // NORMAL: Good HP
+    }
+    
+    // Armor scoring (defense priority - more valuable when HP is low)
+    if (hp < 50) {
+      score += armor * 15; // Armor is very valuable when HP is low
+    } else if (hp < 70) {
+      score += armor * 10; // Armor is valuable when HP is moderate
+    } else {
+      score += armor * 5; // Armor is nice to have when HP is high
+    }
+    
     score += state.playerTower.level * 50;
     score += state.resources * 2;
 
@@ -344,20 +367,36 @@ export class MultiTurnPlanner {
 
   /**
    * Predict our resource spending in a future turn
+   * PRIORITY: Defense (Survival) > Attack > Upgrade
    */
   private predictOurSpending(state: SimulatedState, turn: number): number {
     let spending = 0;
     const resources = state.resources;
+    const hp = state.playerTower.hp;
+    const armor = state.playerTower.armor || 0;
 
-    // Predict armor spending (if low HP or late game)
-    if ((state.playerTower.hp < 60 || turn >= 25) && state.playerTower.armor < 10) {
+    // PRIORITY 1: Defense/Armor (Survival is main goal)
+    // CRITICAL: Very low HP - prioritize armor heavily
+    if (hp < 40 && armor < 20) {
+      spending += Math.min(10, resources * 0.5); // Spend up to 50% on armor
+    }
+    // HIGH: Low HP - prioritize armor
+    else if (hp < 60 && armor < 15) {
+      spending += Math.min(10, resources * 0.4); // Spend up to 40% on armor
+    }
+    // LATE GAME: Fatigue damage requires armor
+    else if (turn >= 25 && armor < 10) {
       spending += Math.min(10, resources * 0.3); // Spend up to 30% on armor
     }
+    // MEDIUM: Low armor maintenance
+    else if (armor < 5 && hp > 50) {
+      spending += Math.min(5, resources * 0.2); // Spend up to 20% on minimal armor
+    }
 
-    // Predict attack spending (typical attack size)
+    // PRIORITY 2: Attack (only if we have enough HP/armor)
     const remaining = resources - spending;
-    if (remaining > 0) {
-      // Typical attack: 20-30% of resources
+    if (remaining > 0 && hp > 40) { // Only attack if HP is safe
+      // Typical attack: 20-30% of remaining resources
       const attackSize = Math.min(30, Math.floor(remaining * 0.25));
       spending += attackSize;
     }

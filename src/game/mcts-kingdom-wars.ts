@@ -272,10 +272,33 @@ export class MCTSKingdomWars {
       // This will be handled by action combinations (not spending all resources)
     }
 
-    // Armor actions (different amounts)
+    // Armor actions (different amounts) - PRIORITY: Survival
     if (this.shouldBuildArmor(playerTower, request.turn)) {
-      for (let amount = 1; amount <= Math.min(10, resources); amount += 5) {
-        possibleActions.push({ type: 'armor', amount });
+      const currentArmor = playerTower.armor || 0;
+      const hp = playerTower.hp;
+      
+      // Calculate recommended armor amount based on HP
+      let targetArmor = 10; // Default target
+      if (hp < 40) {
+        targetArmor = 20; // CRITICAL: Very low HP, need more armor
+      } else if (hp < 60) {
+        targetArmor = 15; // HIGH: Low HP, need good armor
+      } else if (request.turn >= 25) {
+        targetArmor = 10; // LATE GAME: Fatigue damage
+      }
+      
+      const neededArmor = Math.max(0, targetArmor - currentArmor);
+      const maxArmor = Math.min(neededArmor, resources, 10); // Max 10 per turn
+      
+      // Generate armor actions: full amount, half amount, minimal amount
+      if (maxArmor >= 10) {
+        possibleActions.push({ type: 'armor', amount: 10 });
+        possibleActions.push({ type: 'armor', amount: 5 });
+      } else if (maxArmor >= 5) {
+        possibleActions.push({ type: 'armor', amount: maxArmor });
+        possibleActions.push({ type: 'armor', amount: Math.floor(maxArmor / 2) });
+      } else if (maxArmor > 0) {
+        possibleActions.push({ type: 'armor', amount: maxArmor });
       }
     }
 
@@ -505,37 +528,70 @@ export class MCTSKingdomWars {
 
   /**
    * Evaluate game state (higher = better for us)
+   * PRIORITY: Survival > Defense > Attack > Upgrade
    */
   private evaluateState(playerTower: Tower, enemies: Tower[]): number {
-    // Base score from our state
-    let score = playerTower.hp * 10;
-    score += playerTower.armor * 5;
-    score += playerTower.level * 50;
-    score += (playerTower.resources || 0) * 2;
-
-    // Bonus for saving resources when close to upgrade
-    const upgradeCost = this.getUpgradeCost(playerTower.level);
+    const hp = playerTower.hp;
+    const armor = playerTower.armor || 0;
+    const level = playerTower.level;
     const resources = playerTower.resources || 0;
-    if (upgradeCost > resources && resources >= upgradeCost * 0.6) {
-      // We're 60%+ of the way to upgrade, bonus for saving
-      const progressToUpgrade = resources / upgradeCost;
-      score += progressToUpgrade * 30; // Bonus for being close to upgrade
+    
+    // CRITICAL: Survival is the main goal - heavily penalize low HP
+    let score = 0;
+    
+    // HP scoring (survival priority)
+    if (hp <= 0) {
+      return -100000; // Death is catastrophic
+    } else if (hp < 30) {
+      score += hp * 50; // CRITICAL: Very low HP, survival is everything
+    } else if (hp < 50) {
+      score += hp * 30; // HIGH: Low HP, prioritize survival
+    } else if (hp < 70) {
+      score += hp * 20; // MEDIUM: Moderate HP
+    } else {
+      score += hp * 10; // NORMAL: Good HP
+    }
+    
+    // Armor scoring (defense priority) - more valuable when HP is low
+    if (hp < 50) {
+      score += armor * 15; // Armor is very valuable when HP is low
+    } else if (hp < 70) {
+      score += armor * 10; // Armor is valuable when HP is moderate
+    } else {
+      score += armor * 5; // Armor is nice to have when HP is high
+    }
+    
+    // Level scoring (resource generation)
+    score += level * 50;
+    
+    // Resources scoring (less important than survival)
+    score += resources * 2;
+
+    // Bonus for saving resources when close to upgrade (only if safe)
+    if (hp > 50) {
+      const upgradeCost = this.getUpgradeCost(level);
+      if (upgradeCost > resources && resources >= upgradeCost * 0.6) {
+        const progressToUpgrade = resources / upgradeCost;
+        score += progressToUpgrade * 30;
+      }
     }
 
     // Subtract enemy strength
     for (const enemy of enemies) {
-      score -= enemy.hp * 8;
-      score -= enemy.armor * 4;
-      score -= enemy.level * 40;
+      if (enemy.hp > 0) {
+        score -= enemy.hp * 8;
+        score -= enemy.armor * 4;
+        score -= enemy.level * 40;
+      }
     }
 
     // Bonus for eliminating enemies
     const aliveEnemies = enemies.filter(e => e.hp > 0).length;
     score += (4 - aliveEnemies) * 100;
-
-    // Penalty if we're dead
-    if (playerTower.hp <= 0) {
-      score = -10000;
+    
+    // Survival bonus: Extra points for being alive with good HP/armor
+    if (hp > 50 && armor > 5) {
+      score += 100; // Survival bonus
     }
 
     return score;
@@ -582,11 +638,35 @@ export class MCTSKingdomWars {
     }
   }
 
+  /**
+   * Enhanced armor decision prioritizing survival
+   * Main goal: Stay alive - build armor when needed for survival
+   */
   private shouldBuildArmor(playerTower: Tower, turn: number): boolean {
-    const isLowHP = playerTower.hp < 60;
-    const isLateGame = turn >= 25;
-    const isLowArmor = playerTower.armor < 10;
-    return (isLowHP || isLateGame) && isLowArmor;
+    const hp = playerTower.hp;
+    const armor = playerTower.armor || 0;
+    
+    // CRITICAL: Very low HP - always build armor if possible
+    if (hp < 40) {
+      return armor < 20; // Try to get to 20 armor
+    }
+    
+    // HIGH PRIORITY: Low HP - build armor
+    if (hp < 60) {
+      return armor < 15; // Try to get to 15 armor
+    }
+    
+    // LATE GAME: Fatigue damage requires armor
+    if (turn >= 25) {
+      return armor < 10; // Minimum 10 armor for late game
+    }
+    
+    // MEDIUM PRIORITY: Low armor maintenance
+    if (armor < 5 && hp > 50) {
+      return true; // Build minimal armor
+    }
+    
+    return false;
   }
 
   private getUpgradeCost(level: number): number {

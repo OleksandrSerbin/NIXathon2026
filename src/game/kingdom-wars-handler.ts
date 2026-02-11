@@ -437,7 +437,49 @@ export class KingdomWarsHandler {
       turn
     });
     
-    // Check if we can and should upgrade (using multi-turn lookahead)
+    // PRIORITY 1: SURVIVAL - Check if we need armor/defense FIRST
+    // Use multi-turn lookahead to predict incoming damage and plan defense
+    const futureState = this.lookaheadPlanner.predictFutureState(request, []);
+    const predictedDamage = futureState.expectedDamage;
+    const predictedHP = futureState.expectedHP;
+    
+    // Calculate how much armor we need to survive predicted damage
+    const shouldArmor = this.shouldBuildArmorWithLookahead(
+      playerTower, 
+      turn, 
+      predictedDamage,
+      predictedHP,
+      enemyTowers
+    );
+    
+    Logger.debug('Defense evaluation (survival priority)', {
+      shouldBuildArmor: shouldArmor.shouldBuild,
+      hp: playerTower.hp,
+      armor: playerTower.armor,
+      turn,
+      predictedDamage,
+      predictedHP,
+      recommendedArmor: shouldArmor.recommendedAmount,
+      isLateGame: turn >= 25,
+      isLowHP: playerTower.hp < 60,
+      reason: shouldArmor.reason
+    });
+    
+    // Build armor FIRST if needed for survival (before upgrades/attacks)
+    if (shouldArmor.shouldBuild && remainingResources > 0) {
+      const armorAmount = Math.min(shouldArmor.recommendedAmount, remainingResources);
+      if (armorAmount > 0) {
+        actions.push({ type: 'armor', amount: armorAmount });
+        remainingResources -= armorAmount;
+        Logger.debug('Armor action added (survival priority)', { 
+          amount: armorAmount, 
+          remaining: remainingResources,
+          reason: shouldArmor.reason
+        });
+      }
+    }
+    
+    // PRIORITY 2: Upgrade (only if safe after defense planning)
     const upgradeCost = this.getUpgradeCost(playerTower.level);
     const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
     Logger.debug('Upgrade evaluation (with lookahead)', {
@@ -446,32 +488,16 @@ export class KingdomWarsHandler {
       shouldUpgrade,
       currentResources: remainingResources,
       currentHP: playerTower.hp,
-      currentLevel: playerTower.level
+      currentLevel: playerTower.level,
+      predictedHP: predictedHP,
+      safeToUpgrade: futureState.safeToUpgrade
     });
     
-    if (remainingResources >= upgradeCost && shouldUpgrade) {
+    // Only upgrade if safe (HP will be > 50 after predicted damage)
+    if (remainingResources >= upgradeCost && shouldUpgrade && futureState.safeToUpgrade) {
       actions.push({ type: 'upgrade' });
       remainingResources -= upgradeCost;
       Logger.debug('Upgrade action added', { cost: upgradeCost, remaining: remainingResources });
-    }
-    
-    // Check if we need armor (low HP or late game)
-    const shouldArmor = this.shouldBuildArmor(playerTower, turn);
-    Logger.debug('Armor evaluation', {
-      shouldBuildArmor: shouldArmor,
-      hp: playerTower.hp,
-      armor: playerTower.armor,
-      turn,
-      isLateGame: turn >= 25
-    });
-    
-    if (shouldArmor) {
-      const armorAmount = Math.min(10, remainingResources);
-      if (armorAmount > 0) {
-        actions.push({ type: 'armor', amount: armorAmount });
-        remainingResources -= armorAmount;
-        Logger.debug('Armor action added', { amount: armorAmount, remaining: remainingResources });
-      }
     }
     
       // Attack best target using resource estimates and Game Theory history
@@ -727,6 +753,86 @@ export class KingdomWarsHandler {
     const isLowArmor = playerTower.armor < 10;
     
     return (isLowHP || isLateGame) && isLowArmor;
+  }
+
+  /**
+   * Enhanced armor decision with multi-turn lookahead for survival planning
+   * Main goal: Stay alive - prioritize defense over everything else
+   */
+  private shouldBuildArmorWithLookahead(
+    playerTower: Tower,
+    turn: number,
+    predictedDamage: number,
+    predictedHP: number,
+    enemyTowers: Tower[]
+  ): { shouldBuild: boolean; recommendedAmount: number; reason: string } {
+    const hp = playerTower.hp;
+    const armor = playerTower.armor || 0;
+    const resources = playerTower.resources || 0;
+    
+    // CRITICAL: If HP is very low (< 40), prioritize armor heavily
+    if (hp < 40) {
+      const neededArmor = Math.max(0, 20 - armor); // Try to get to 20 armor
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(neededArmor, resources, 10),
+        reason: `CRITICAL: HP < 40, need armor for survival`
+      };
+    }
+    
+    // HIGH PRIORITY: If HP is low (< 60) and predicted damage is high
+    if (hp < 60 && predictedDamage > 15) {
+      const neededArmor = Math.max(0, 15 - armor);
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(neededArmor, resources, 10),
+        reason: `HP < 60 and predicted damage ${predictedDamage} > 15, build armor`
+      };
+    }
+    
+    // HIGH PRIORITY: If predicted HP will be low (< 50) after damage
+    if (predictedHP < 50 && armor < 15) {
+      const neededArmor = Math.max(0, 15 - armor);
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(neededArmor, resources, 10),
+        reason: `Predicted HP ${predictedHP} < 50, need armor buffer`
+      };
+    }
+    
+    // LATE GAME: Fatigue damage (turn 25+)
+    if (turn >= 25 && armor < 10) {
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(10 - armor, resources, 10),
+        reason: `Late game (turn ${turn}), fatigue damage requires armor`
+      };
+    }
+    
+    // MEDIUM PRIORITY: If we have low armor and enemies are strong
+    const avgEnemyHP = enemyTowers.reduce((sum, e) => sum + e.hp, 0) / enemyTowers.length;
+    if (armor < 10 && avgEnemyHP > 50 && hp < 80) {
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(10 - armor, resources, 10),
+        reason: `Low armor (${armor}) with strong enemies (avg HP ${avgEnemyHP.toFixed(1)})`
+      };
+    }
+    
+    // LOW PRIORITY: General armor maintenance (armor < 5)
+    if (armor < 5 && resources >= 5 && hp > 50) {
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(5 - armor, resources, 5),
+        reason: `Maintenance: armor ${armor} < 5, build minimal armor`
+      };
+    }
+    
+    return {
+      shouldBuild: false,
+      recommendedAmount: 0,
+      reason: `No armor needed: HP ${hp}, armor ${armor}, predicted HP ${predictedHP.toFixed(1)}`
+    };
   }
 
   private findBestAttackTarget(
