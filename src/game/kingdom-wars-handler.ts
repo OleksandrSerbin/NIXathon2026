@@ -11,6 +11,7 @@ import { Logger } from '../utils/logger';
 import { MCTSKingdomWars } from './mcts-kingdom-wars';
 import { GameTheoryNegotiation } from './game-theory-negotiation';
 import { EnemyResourceTracker } from './enemy-resource-tracker';
+import { MultiTurnPlanner } from './multi-turn-planner';
 
 /**
  * Kingdom Wars game handler
@@ -20,34 +21,41 @@ export class KingdomWarsHandler {
   private botInfo: BotInfo;
   private useMCTS: boolean;
   private useGameTheory: boolean;
+  private useLookahead: boolean;
   private mcts: MCTSKingdomWars | null = null;
   private gameTheory: GameTheoryNegotiation | null = null;
   private resourceTracker: EnemyResourceTracker;
+  private lookaheadPlanner: MultiTurnPlanner;
 
-  constructor(botInfo?: Partial<BotInfo>, useMCTS: boolean = false) {
+  constructor(botInfo?: Partial<BotInfo>, useMCTS: boolean = true) {
     this.botInfo = {
       name: botInfo?.name || 'NIXathon2026 Bot',
       strategy: 'AI-trapped-strategy', // Required by game server
       version: botInfo?.version || '1.0'
     };
-    this.useMCTS = useMCTS || process.env.USE_MCTS === 'true';
-    this.useGameTheory = process.env.USE_GAME_THEORY !== 'false'; // Default: enabled
     
-    if (this.useMCTS) {
-      const iterations = parseInt(process.env.MCTS_ITERATIONS || '500', 10);
-      const timeLimit = parseInt(process.env.MCTS_TIME_LIMIT_MS || '800', 10);
-      this.mcts = new MCTSKingdomWars(iterations, 1.41, timeLimit);
-      Logger.log('MCTS enabled for combat phase', { iterations, timeLimit });
-    }
+    // Enable all features by default
+    this.useMCTS = useMCTS !== false; // Default: enabled
+    this.useGameTheory = true; // Always enabled
+    this.useLookahead = true; // Always enabled
+    
+    // Initialize MCTS with optimized settings
+    const iterations = 500;
+    const timeLimit = 800;
+    this.mcts = new MCTSKingdomWars(iterations, 1.41, timeLimit);
+    Logger.log('MCTS enabled for combat phase', { iterations, timeLimit });
 
-    if (this.useGameTheory) {
-      // Will be initialized with player ID from first request
-      Logger.log('Game Theory enabled for negotiation phase');
-    }
+    // Game Theory will be initialized with player ID from first request
+    Logger.log('Game Theory enabled for negotiation phase');
 
     // Initialize resource tracker
     this.resourceTracker = new EnemyResourceTracker();
     Logger.log('Enemy Resource Tracker enabled');
+
+    // Initialize lookahead planner with optimized settings
+    const maxTurns = 3;
+    this.lookaheadPlanner = new MultiTurnPlanner(maxTurns, this.resourceTracker);
+    Logger.log('Multi-turn lookahead enabled', { maxTurns });
   }
 
   /**
@@ -236,7 +244,7 @@ export class KingdomWarsHandler {
         }))
       });
 
-      // Calculate combat actions (use MCTS if enabled, otherwise heuristic)
+      // Calculate combat actions (use MCTS, lookahead, or heuristic)
       const startResources = request.playerTower.resources || 0;
       let actions: CombatResponseAction[];
       let resourceUsage: { start: number; remaining: number; spent: number };
@@ -251,6 +259,26 @@ export class KingdomWarsHandler {
           return sum + this.getActionCost(action, request.playerTower.level);
         }, 0);
         actions = mctsActions;
+        resourceUsage = {
+          start: startResources,
+          remaining: startResources - spent,
+          spent
+        };
+      } else if (this.useLookahead) {
+        Logger.log('Using multi-turn lookahead for combat decision', {
+          gameId: request.gameId,
+          turn: request.turn
+        });
+        
+        // Generate possible action combinations
+        const possibleActions = this.generateActionCombinations(request);
+        
+        // Use lookahead planner to evaluate
+        const plannedActions = this.lookaheadPlanner.planCombatActions(request, possibleActions);
+        const spent = plannedActions.reduce((sum, action) => {
+          return sum + this.getActionCost(action, request.playerTower.level);
+        }, 0);
+        actions = plannedActions;
         resourceUsage = {
           start: startResources,
           remaining: startResources - spent,
@@ -765,6 +793,89 @@ export class KingdomWarsHandler {
       return action.troopCount || 0;
     }
     return 0;
+  }
+
+  /**
+   * Generate possible action combinations for lookahead planning
+   */
+  private generateActionCombinations(request: CombatRequest): CombatResponseAction[][] {
+    const { playerTower, enemyTowers } = request;
+    const resources = playerTower.resources || 0;
+    const combinations: CombatResponseAction[][] = [];
+
+    // Generate possible actions
+    const possibleActions: CombatResponseAction[] = [];
+
+    // Upgrade action
+    const upgradeCost = this.getUpgradeCost(playerTower.level);
+    if (resources >= upgradeCost && this.shouldUpgrade(playerTower, enemyTowers, request.turn)) {
+      possibleActions.push({ type: 'upgrade' });
+    }
+
+    // Armor actions (different amounts)
+    if (this.shouldBuildArmor(playerTower, request.turn)) {
+      for (let amount = 5; amount <= Math.min(10, resources); amount += 5) {
+        possibleActions.push({ type: 'armor', amount });
+      }
+    }
+
+    // Attack actions (different targets and amounts)
+    for (const enemy of enemyTowers) {
+      for (let troops = 10; troops <= Math.min(30, resources); troops += 10) {
+        possibleActions.push({
+          type: 'attack',
+          targetId: enemy.playerId,
+          troopCount: troops
+        });
+      }
+    }
+
+    // Generate single-action combinations
+    for (const action of possibleActions) {
+      const cost = this.getActionCost(action, playerTower.level);
+      if (cost <= resources) {
+        combinations.push([action]);
+
+        // Try to add second action if resources allow
+        const remaining = resources - cost;
+        for (const secondAction of possibleActions) {
+          if (action === secondAction) continue;
+          const secondCost = this.getActionCost(secondAction, playerTower.level);
+          if (secondCost <= remaining && this.isValidCombination([action, secondAction])) {
+            combinations.push([action, secondAction]);
+          }
+        }
+      }
+    }
+
+    // If no combinations, return empty action
+    if (combinations.length === 0) {
+      combinations.push([]);
+    }
+
+    return combinations;
+  }
+
+  /**
+   * Check if action combination is valid
+   */
+  private isValidCombination(actions: CombatResponseAction[]): boolean {
+    let upgradeCount = 0;
+    let armorCount = 0;
+    const attackTargets = new Set<number>();
+
+    for (const action of actions) {
+      if (action.type === 'upgrade') upgradeCount++;
+      if (action.type === 'armor') armorCount++;
+      if (action.type === 'attack') {
+        if (attackTargets.has(action.targetId!)) {
+          return false; // Can't attack same target twice
+        }
+        attackTargets.add(action.targetId!);
+      }
+    }
+
+    return upgradeCount <= 1 && armorCount <= 1;
   }
 
   private isValidNegotiateRequest(request: any): boolean {
