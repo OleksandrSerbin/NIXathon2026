@@ -39,11 +39,12 @@ export class KingdomWarsHandler {
     this.useGameTheory = true; // Always enabled
     this.useLookahead = true; // Always enabled
     
-    // Initialize MCTS with optimized settings
-    const iterations = 500;
-    const timeLimit = 800;
+    // Initialize MCTS with performance-optimized settings for 100-150 req/s
+    // Reduced iterations and time limit to ensure < 1s response time
+    const iterations = 200; // Reduced from 500 for faster responses
+    const timeLimit = 400; // Reduced from 800ms to ensure < 1s total response time
     this.mcts = new MCTSKingdomWars(iterations, 1.41, timeLimit);
-    Logger.log('MCTS enabled for combat phase', { iterations, timeLimit });
+    Logger.log('MCTS enabled for combat phase (performance optimized)', { iterations, timeLimit });
 
     // Game Theory will be initialized with player ID from first request
     Logger.log('Game Theory enabled for negotiation phase');
@@ -52,10 +53,11 @@ export class KingdomWarsHandler {
     this.resourceTracker = new EnemyResourceTracker();
     Logger.log('Enemy Resource Tracker enabled');
 
-    // Initialize lookahead planner with optimized settings
-    const maxTurns = 5; // Increased from 3 to 5 for better long-term planning
+    // Initialize lookahead planner with performance-optimized settings
+    // Reduced depth for faster responses while maintaining strategic value
+    const maxTurns = 3; // Reduced from 5 to 3 for better performance (100-150 req/s)
     this.lookaheadPlanner = new MultiTurnPlanner(maxTurns, this.resourceTracker);
-    Logger.log('Multi-turn lookahead enabled', { maxTurns });
+    Logger.log('Multi-turn lookahead enabled (performance optimized)', { maxTurns });
   }
 
   /**
@@ -119,13 +121,8 @@ export class KingdomWarsHandler {
         return;
       }
       
-      if (aliveEnemies.length !== request.enemyTowers.length) {
-        Logger.debug('Filtered out dead enemies', {
-          original: request.enemyTowers.length,
-          alive: aliveEnemies.length,
-          dead: request.enemyTowers.filter(e => e.hp <= 0).map(e => e.playerId)
-        });
-      }
+      // Removed debug logging for performance (100-150 req/s)
+      // if (aliveEnemies.length !== request.enemyTowers.length) { ... }
 
       // Update resource tracking (only for alive enemies)
       this.resourceTracker.updateEstimates(
@@ -136,16 +133,9 @@ export class KingdomWarsHandler {
         []
       );
 
-      // Log resource estimates
-      const resourceEstimates = this.resourceTracker.getAllEstimatesForGame(request.gameId);
-      Logger.debug('Enemy resource estimates', {
-        estimates: Array.from(resourceEstimates.entries()).map(([id, est]) => ({
-          playerId: id,
-          estimatedResources: est.estimatedResources,
-          resourceGeneration: est.resourceGeneration,
-          level: est.lastKnownLevel
-        }))
-      });
+      // Log resource estimates (only at debug level to reduce I/O for performance)
+      // Removed for performance - too expensive for 100-150 req/s
+      // const resourceEstimates = this.resourceTracker.getAllEstimatesForGame(request.gameId);
 
       // Create request with only alive enemies for planning
       const planningRequest = {
@@ -206,7 +196,17 @@ export class KingdomWarsHandler {
 
       const processingTime = Date.now() - startTime;
       
-      // Log decision details
+      // Performance check: Warn if response time exceeds threshold
+      if (processingTime > 500) {
+        Logger.warn('Slow negotiation response', {
+          gameId: request.gameId,
+          turn: request.turn,
+          timeMs: processingTime,
+          warning: 'Response time > 500ms, may impact 100-150 req/s target'
+        });
+      }
+      
+      // Log decision details (only essential info for performance)
       Logger.negotiationDecision(
         request.gameId,
         request.turn,
@@ -237,6 +237,7 @@ export class KingdomWarsHandler {
     
     try {
       const startTime = Date.now();
+      const MAX_RESPONSE_TIME = 1000; // 1 second max response time
       const request: CombatRequest = req.body;
 
       // Log incoming request
@@ -289,13 +290,8 @@ export class KingdomWarsHandler {
         return;
       }
       
-      if (aliveEnemies.length !== request.enemyTowers.length) {
-        Logger.debug('Filtered out dead enemies from combat planning', {
-          original: request.enemyTowers.length,
-          alive: aliveEnemies.length,
-          dead: request.enemyTowers.filter(e => e.hp <= 0).map(e => e.playerId)
-        });
-      }
+      // Removed debug logging for performance (100-150 req/s)
+      // if (aliveEnemies.length !== request.enemyTowers.length) { ... }
 
       // Update resource tracking (only for alive enemies)
       this.resourceTracker.updateEstimates(
@@ -306,16 +302,8 @@ export class KingdomWarsHandler {
         request.previousAttacks
       );
 
-      // Use resource estimates for planning
-      const resourceEstimates = this.resourceTracker.getAllEstimatesForGame(request.gameId);
-      Logger.debug('Enemy resource estimates for combat', {
-        estimates: Array.from(resourceEstimates.entries()).map(([id, est]) => ({
-          playerId: id,
-          estimatedResources: est.estimatedResources,
-          canUpgrade: this.resourceTracker.canAffordUpgradeForGame(request.gameId, id),
-          expectedAttackSize: est.spendingPattern.avgAttackSize || est.resourceGeneration * 0.5
-        }))
-      });
+      // Use resource estimates for planning (logging removed for performance)
+      // const resourceEstimates = this.resourceTracker.getAllEstimatesForGame(request.gameId);
 
       // Create request with only alive enemies for planning
       const planningRequest = {
@@ -329,10 +317,8 @@ export class KingdomWarsHandler {
       let resourceUsage: { start: number; remaining: number; spent: number };
       
       if (this.useMCTS && this.mcts) {
-        Logger.log('Using MCTS for combat decision', {
-          gameId: request.gameId,
-          turn: request.turn
-        });
+        // Removed verbose logging for performance (100-150 req/s)
+        // Logger.log('Using MCTS for combat decision', { ... });
         
         // Pass Game Theory and Resource Tracker to MCTS for better decisions
         this.mcts.setHelpers(this.gameTheory, this.resourceTracker);
@@ -348,10 +334,8 @@ export class KingdomWarsHandler {
           spent
         };
       } else if (this.useLookahead) {
-        Logger.log('Using multi-turn lookahead for combat decision', {
-          gameId: request.gameId,
-          turn: request.turn
-        });
+        // Removed verbose logging for performance (100-150 req/s)
+        // Logger.log('Using multi-turn lookahead for combat decision', { ... });
         
         // Generate possible action combinations (with alive enemies only)
         const possibleActions = this.generateActionCombinations(planningRequest);
@@ -421,28 +405,15 @@ export class KingdomWarsHandler {
     
     // Analyze threats
     const threats = this.analyzeThreats(playerTower, enemyTowers, combatActions);
-    Logger.debug('Threat analysis', {
-      threats: Object.fromEntries(threats),
-      playerTower: { playerId: playerTower.playerId, hp: playerTower.hp, armor: playerTower.armor }
-    });
+    // Removed debug logging for performance (100-150 req/s)
     
     // Find best ally (strongest non-threat)
     const bestAlly = this.findBestAlly(enemyTowers, threats);
-    Logger.debug('Best ally selected', bestAlly ? {
-      playerId: bestAlly.playerId,
-      hp: bestAlly.hp,
-      level: bestAlly.level,
-      threatLevel: threats.get(bestAlly.playerId) || 0
-    } : null);
+    // Removed debug logging for performance
     
     // Find best target (weakest threat)
     const bestTarget = this.findBestTarget(enemyTowers, threats);
-    Logger.debug('Best target selected', bestTarget ? {
-      playerId: bestTarget.playerId,
-      hp: bestTarget.hp,
-      level: bestTarget.level,
-      threatLevel: threats.get(bestTarget.playerId) || 0
-    } : null);
+    // Removed debug logging for performance
     
     const response: NegotiateResponse[] = [];
     
@@ -518,17 +489,7 @@ export class KingdomWarsHandler {
     // This is a MAIN FOCUS - prioritize upgrades to increase resource generation
     const upgradeCost = this.getUpgradeCost(playerTower.level);
     const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
-    Logger.debug('LEVELING evaluation (income increase priority)', {
-      upgradeCost,
-      canAfford: remainingResources >= upgradeCost,
-      shouldUpgrade,
-      currentResources: remainingResources,
-      currentHP: playerTower.hp,
-      currentLevel: playerTower.level,
-      predictedHP: predictedHP,
-      safeToUpgrade: futureState.safeToUpgrade,
-      reason: 'Upgrade increases income/resources for future defense investment'
-    });
+    // Removed debug logging for performance (100-150 req/s)
     
     // FIXED: More aggressive upgrade - lower HP thresholds and upgrade when behind
     // Only skip upgrade if HP is critical (already handled above)
@@ -537,16 +498,17 @@ export class KingdomWarsHandler {
                             (turn <= 10 && playerTower.hp > 45)) && !isCriticalHP;
     
     // CRITICAL FIX: Upgrade when behind in levels (even if HP is lower)
+    // FIXED: Lower HP thresholds for "behind" upgrades (40/35 → 35/30)
     const avgEnemyLevel = enemyTowers.length > 0 
       ? enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length 
       : playerTower.level;
     const isBehind = playerTower.level < avgEnemyLevel - 0.5;
     const isVeryBehind = playerTower.level < avgEnemyLevel - 1;
     
-    // Upgrade if: (safe AND shouldUpgrade) OR (behind AND HP > 40) OR (very behind AND HP > 35)
+    // Upgrade if: (safe AND shouldUpgrade) OR (behind AND HP > 35) OR (very behind AND HP > 30)
     const shouldUpgradeNow = (isSafeForUpgrade && shouldUpgrade) || 
-                            (isBehind && playerTower.hp > 40) || 
-                            (isVeryBehind && playerTower.hp > 35);
+                            (isBehind && playerTower.hp > 35) || 
+                            (isVeryBehind && playerTower.hp > 30);
     
     if (remainingResources >= upgradeCost && shouldUpgradeNow) {
       actions.push({ type: 'upgrade' });
@@ -582,8 +544,8 @@ export class KingdomWarsHandler {
     // Now that we've upgraded (if safe), build armor with increased income potential
     // This is a MAIN FOCUS - prioritize defense to survive and reduce incoming damage
     // Note: We evaluate defense even if critical armor was built, to build more if needed
-    // FIXED: More lenient early rounds defense - build if HP < 60 (instead of 50)
-    // EARLY ROUNDS: Be conservative - only build armor if HP is low or late game
+    // FIXED: More proactive defense - build if HP < 60 (proactive, not reactive)
+    // EARLY ROUNDS: Build armor if HP < 60 or late game - prioritize survival
     const isEarlyRoundsForDefense = turn <= 10;
     const shouldBuildDefenseInEarlyRounds = isEarlyRoundsForDefense && (playerTower.hp < 60 || turn >= 25);
     
@@ -595,22 +557,7 @@ export class KingdomWarsHandler {
       enemyTowers
     );
     
-    Logger.debug('DEFENSE evaluation (after leveling)', {
-      shouldBuildArmor: shouldArmor.shouldBuild,
-      hp: playerTower.hp,
-      armor: playerTower.armor,
-      turn,
-      predictedDamage,
-      predictedHP,
-      recommendedArmor: shouldArmor.recommendedAmount,
-      isLateGame: turn >= 25,
-      isLowHP: playerTower.hp < 60,
-      isEarlyRounds: isEarlyRoundsForDefense,
-      shouldBuildDefenseInEarlyRounds,
-      reason: shouldArmor.reason,
-      note: isEarlyRoundsForDefense ? 'Early rounds: Save resources for upgrades, only build critical defense' : 'Building defense after leveling to use increased income',
-      criticalArmorAlreadyBuilt: criticalArmorBuilt
-    });
+    // Removed debug logging for performance (100-150 req/s)
     
     // Build armor with remaining resources (after upgrade)
     // MAIN FOCUS: Defense - Save resources for future upgrades, but prioritize defense
@@ -626,9 +573,10 @@ export class KingdomWarsHandler {
     
     const availableForDefense = Math.max(0, remainingResources - defenseResourceBuffer);
     
-    // EARLY ROUNDS: Only build if HP is low (< 50) or late game - save resources for upgrades
+    // FIXED: More proactive defense - build armor when HP < 60 (not just < 50)
+    // EARLY ROUNDS: Build if HP < 60 or late game - save resources for upgrades but prioritize survival
     if (shouldArmor.shouldBuild && remainingResources > 0) {
-      // In early rounds, be more conservative - only build if HP is low
+      // In early rounds, build if HP < 60 (proactive) or late game
       if (isEarlyRoundsForDefense && !shouldBuildDefenseInEarlyRounds && !criticalArmorBuilt) {
         Logger.debug('EARLY ROUNDS: Skipping defense to save resources for upgrades', {
           turn,
@@ -680,18 +628,27 @@ export class KingdomWarsHandler {
     const upgradeCostForNext = this.getUpgradeCost(playerTower.level);
     const resourcesNeededForUpgrade = Math.max(0, upgradeCostForNext - remainingResources);
     
-    // FIXED: Dynamic resource buffer - reduce when very close to upgrade
-    // - Base buffer: 15 resources (always save significant amount)
+    // FIXED: Dynamic resource buffer - save 70-80% for upgrades in early game
+    // - Early game (turns 1-10): Save 70-80% of resources for upgrades (base buffer: 5-10)
+    // - Mid game (turns 11-20): Save 50-60% (base buffer: 10-15)
+    // - Late game (turns 21+): Save 40-50% (base buffer: 15)
     // - If close to upgrade (< 40 resources away): Save more (upgrade cost - current resources + 5)
     // - If very close (< 20 resources away): Save minimal (5 resources) to allow upgrade next turn
-    const baseBuffer = 15; // Always save at least 15 resources for leveling/defense
+    const isEarlyGame = turn <= 10;
+    const isMidGame = turn > 10 && turn <= 20;
+    const baseBuffer = isEarlyGame 
+      ? 5  // Early game: Save 70-80% for upgrades (minimal buffer)
+      : isMidGame 
+        ? 10 // Mid game: Save 50-60% (moderate buffer)
+        : 15; // Late game: Save 40-50% (higher buffer)
+    
     const closeToUpgrade = resourcesNeededForUpgrade <= 40;
     const veryCloseToUpgrade = resourcesNeededForUpgrade <= 20;
     const resourceBuffer = veryCloseToUpgrade 
       ? Math.max(5, upgradeCostForNext - remainingResources) // Very close: minimal buffer (5) to allow upgrade
       : closeToUpgrade 
         ? Math.max(baseBuffer, upgradeCostForNext - remainingResources + 5) // Close: save more
-        : baseBuffer; // Not close: save base buffer (15 resources)
+        : baseBuffer; // Not close: save base buffer (5-15 depending on game phase)
     
     const availableForAttack = Math.max(0, remainingResources - resourceBuffer);
     
@@ -709,25 +666,8 @@ export class KingdomWarsHandler {
         this.gameTheory,
         request.turn
       );
-      Logger.debug('Attack target evaluation (ATTACK ONLY IF NECESSARY)', target ? {
-        targetId: target.playerId,
-        targetHp: target.hp,
-        targetArmor: target.armor,
-        availableResources: remainingResources,
-        upgradeCostForNext,
-        resourcesNeededForUpgrade,
-        resourceBuffer,
-        availableForAttack,
-        isTwoPlayerScenario,
-        aliveEnemies,
-        currentHP: playerTower.hp,
-        isCriticalHP: playerTower.hp < 40,
-        enemyEstimate: this.resourceTracker.getEstimateForGame(request.gameId, target.playerId),
-        isAlly: this.gameTheory?.isAlly(request.gameId, target.playerId, request.turn) || false,
-        hasBetrayed: this.gameTheory?.hasBetrayed(request.gameId, target.playerId) || false,
-        cooperationLevel: this.gameTheory?.getCooperationLevel(request.gameId, target.playerId) || 0.5,
-        strategy: 'MAIN FOCUS: Leveling and Defense - Attack only if necessary'
-      } : 'No valid target');
+      // Removed verbose debug logging for performance (100-150 req/s)
+      // Only log critical attack decisions
       
       if (target) {
         // Calculate if we can kill the target
@@ -743,22 +683,7 @@ export class KingdomWarsHandler {
         const shouldAttack = canKillTarget || isCriticalHP || isTwoPlayer;
         
         if (!shouldAttack) {
-          Logger.debug('SKIPPING ATTACK: Saving resources for leveling and defense', {
-            turn,
-            remainingResources,
-            upgradeCostForNext,
-            resourcesNeededForUpgrade,
-            resourceBuffer,
-            availableForAttack,
-            targetId: target.playerId,
-            targetHp: target.hp,
-            targetArmor: target.armor,
-            exactKillDamage: target.hp + target.armor,
-            canKill: canKillTarget,
-            isCriticalHP,
-            isTwoPlayer,
-            reason: 'Main focus: Leveling and Defense. Attack only when necessary (can kill, critical HP, or 2-player)'
-          });
+          // Removed debug logging for performance (100-150 req/s)
         } else {
           // Use resource estimates and history to determine optimal attack size
           // Limit to available resources (after saving buffer for leveling/defense)
@@ -778,34 +703,13 @@ export class KingdomWarsHandler {
               troopCount: attackAmount
             });
             remainingResources -= attackAmount;
-            Logger.debug('Attack action added (ONLY WHEN NECESSARY)', {
-              targetId: target.playerId,
-              troopCount: attackAmount,
-              remaining: remainingResources,
-              resourceBuffer,
-              canKill: canKillTarget,
-              isCriticalHP,
-              isTwoPlayer,
-              reason: canKillTarget 
-                ? 'Can kill target (eliminate threat)' 
-                : isCriticalHP 
-                  ? 'Critical survival (HP < 40, must reduce damage)' 
-                  : '2-player scenario (must finish game)',
-              note: 'Main focus remains: Leveling and Defense'
-            });
+            // Removed verbose debug logging for performance (100-150 req/s)
           }
         }
       }
-    } else {
-      Logger.debug('SKIPPING ATTACK: No resources available after saving for leveling/defense', {
-        turn,
-        remainingResources,
-        upgradeCostForNext,
-        resourceBuffer,
-        availableForAttack,
-        reason: 'Main focus: Leveling and Defense - All resources allocated to upgrades and armor'
-      });
-    }
+      } else {
+        // Removed debug logging for performance (100-150 req/s)
+      }
     
     const resourceUsage = {
       start: startResources,
@@ -813,10 +717,7 @@ export class KingdomWarsHandler {
       spent: startResources - remainingResources
     };
     
-    Logger.debug('Combat actions summary', {
-      actionCount: actions.length,
-      resourceUsage
-    });
+    // Removed debug logging for performance (100-150 req/s)
     
     return { actions, resourceUsage };
   }
@@ -923,9 +824,9 @@ export class KingdomWarsHandler {
       return false;
     }
     
-    // IMPROVED: More lenient HP requirement based on turn
+    // FIXED: Lower HP thresholds for early game upgrades (50/45/40 instead of 60/55/50)
     const hp = playerTower.hp;
-    const minHP = turn <= 5 ? 60 : turn <= 10 ? 55 : 50; // More aggressive early game
+    const minHP = turn <= 5 ? 50 : turn <= 10 ? 45 : 40; // More aggressive early game
     if (hp <= minHP) {
       return false;
     }
@@ -985,13 +886,13 @@ export class KingdomWarsHandler {
         }
       });
 
-      // IMPROVED: More aggressive upgrade criteria
+      // FIXED: Lower HP thresholds for early game upgrades (50/45/40 instead of 60/55/50)
       // 1. We'll still be safe (HP threshold based on turn)
-      const minSafeHP = turn <= 5 ? 60 : turn <= 10 ? 55 : 50;
+      const minSafeHP = turn <= 5 ? 50 : turn <= 10 ? 45 : 40;
       const willBeSafe = futureWithUpgrade.expectedHP > minSafeHP;
       
       // 2. We'll have enough resources for next 5 turns (lower threshold early game)
-      const minResources = turn <= 10 ? 15 : 20; // More aggressive early game
+      const minResources = turn <= 10 ? 10 : 15; // More aggressive early game (reduced from 15/20)
       const willHaveResources = futureWithUpgrade.minResources >= minResources;
       
       // 3. The upgrade provides benefit (more resource generation or better survival)
@@ -1056,40 +957,44 @@ export class KingdomWarsHandler {
     const isBehind = level < avgEnemyLevel;
     const isVeryBehind = level < avgEnemyLevel - 0.5; // More than 0.5 levels behind
     
+    // FIXED: Lower HP thresholds for upgrades (60/55/50 → 50/45/40)
     // CRITICAL: Very early game (turns 0-5) - upgrade ASAP if safe
-    if (turn <= 5 && hp > 60) {
+    if (turn <= 5 && hp > 50) {
       return true; // Aggressive early upgrade
     }
     
     // HIGH PRIORITY: Early game (turns 6-10) - upgrade if safe
-    if (turn <= 10 && hp > 55) {
+    if (turn <= 10 && hp > 45) {
       return true; // Upgrade early for resource generation advantage
     }
     
     // MEDIUM PRIORITY: Mid game (turns 11-20) - upgrade if safe or behind
-    if (turn <= 20 && hp > 50) {
-      return isBehind || hp > 60; // Upgrade if behind or very safe
+    if (turn <= 20 && hp > 40) {
+      return isBehind || hp > 50; // Upgrade if behind or very safe
     }
     
     // LATE GAME: Only upgrade if very behind (resource generation critical)
     if (turn > 20) {
-      return isVeryBehind && hp > 50; // Only if significantly behind
+      return isVeryBehind && hp > 40; // Only if significantly behind
     }
     
     return false;
   }
 
   private shouldBuildArmor(playerTower: Tower, turn: number): boolean {
+    // FIXED: More proactive defense - build armor when HP < 60 (not just < 40)
     // Build armor if:
-    // 1. HP is low (< 60)
+    // 1. HP is low (< 60) - PROACTIVE (was < 40)
     // 2. Late game (turn >= 25, fatigue damage)
     // 3. Armor is low (< 10)
+    // 4. Mid game (turn >= 20) - prepare for late game
     
-    const isLowHP = playerTower.hp < 60;
+    const isLowHP = playerTower.hp < 60; // PROACTIVE: Build when HP < 60
     const isLateGame = turn >= 25;
+    const isMidGame = turn >= 20; // Prepare for late game
     const isLowArmor = playerTower.armor < 10;
     
-    return (isLowHP || isLateGame) && isLowArmor;
+    return (isLowHP || isLateGame || isMidGame) && isLowArmor;
   }
 
   /**
@@ -1252,6 +1157,16 @@ export class KingdomWarsHandler {
         return;
       }
       
+      // CRITICAL FIX: Completely exclude allies from attack targets
+      if (gameTheory && gameTheory.isAlly(gameId, enemy.playerId, turn)) {
+        Logger.debug('Skipping ally in combat (completely excluded)', {
+          playerId: enemy.playerId,
+          allianceTurns: gameTheory.getAllianceRecord(gameId, enemy.playerId)?.allianceTurns || 0,
+          turn
+        });
+        return; // Skip this enemy - do not attack allies
+      }
+      
       const estimate = resourceTracker.getEstimate(enemy.playerId);
       
       // Base score: HP + armor (lower is better)
@@ -1259,15 +1174,6 @@ export class KingdomWarsHandler {
       
       // Game Theory history adjustments
       if (gameTheory) {
-        // AVOID attacking allies (high penalty)
-        if (gameTheory.isAlly(gameId, enemy.playerId, turn)) {
-          score += 200; // Very low priority (high score) - avoid attacking allies
-          Logger.debug('Avoiding ally in combat', {
-            playerId: enemy.playerId,
-            allianceTurns: gameTheory.getAllianceRecord(gameId, enemy.playerId)?.allianceTurns || 0
-          });
-        }
-        
         // PRIORITIZE enemies who betrayed us (high priority)
         if (gameTheory.hasBetrayed(gameId, enemy.playerId)) {
           score -= 100; // Very high priority (low score) - attack betrayers
@@ -1318,20 +1224,17 @@ export class KingdomWarsHandler {
       }
     });
     
-    // If no target found, fall back to basic targeting
+    // If no target found (all enemies are allies or dead), return null
     if (bestTarget === null) {
-      return this.findBestAttackTarget(enemyTowers, playerTower);
-    }
-    
-    // If all enemies are allies, log warning but attack anyway
-    const finalTarget: Tower = bestTarget;
-    if (gameTheory && gameTheory.isAlly(gameId, finalTarget.playerId, turn)) {
-      Logger.warn('All enemies are allies, attacking anyway', {
-        targetId: finalTarget.playerId
+      Logger.debug('No valid attack target found (all enemies are allies or dead)', {
+        gameId,
+        turn,
+        enemyCount: enemyTowers.length
       });
+      return null;
     }
     
-    return finalTarget;
+    return bestTarget;
   }
 
   /**

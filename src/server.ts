@@ -7,9 +7,9 @@ import { requestLogger } from './middleware/request-logger';
 const app = express();
 const PORT: number = parseInt(process.env.PORT || '3000', 10);
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Middleware - Optimized for high throughput (100-150 req/s)
+app.use(express.json({ limit: '10mb' })); // Limit body size
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware (must be after body parsing)
 app.use(requestLogger);
@@ -83,9 +83,10 @@ app.listen(PORT, (): void => {
   console.log(`Kingdom Wars - Info: http://localhost:${PORT}/info`);
   console.log(`Legacy move endpoint: http://localhost:${PORT}/move`);
   console.log(`AI Strategy: ${process.env.AI_STRATEGY || 'minimax'}`);
-  console.log(`MCTS Enabled: Yes (500 iterations, 800ms limit)`);
+  console.log(`MCTS Enabled: Yes (200 iterations, 400ms limit) - Performance optimized for 100-150 req/s`);
   console.log(`Game Theory Enabled: Yes`);
-  console.log(`Multi-turn Lookahead: Yes (3 turns ahead)`);
+  console.log(`Multi-turn Lookahead: Yes (3 turns ahead) - Performance optimized`);
   console.log(`Enemy Resource Tracker: Yes`);
   console.log(`All features enabled by default`);
+  console.log(`Performance Target: 100-150 requests/second`);
 });
