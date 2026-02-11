@@ -63,7 +63,8 @@ export class Logger {
   }
 
   static requestBody(endpoint: string, body: any): void {
-    this.debug(`[REQUEST BODY] ${endpoint}`, body);
+    // Log at info level so request bodies are always visible
+    this.log(`[REQUEST BODY] ${endpoint}`, body);
   }
 
   static responseOutgoing(endpoint: string, statusCode: number, response: any, timeMs: number): void {

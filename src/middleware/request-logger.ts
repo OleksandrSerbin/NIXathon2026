@@ -23,12 +23,12 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
   if (req.method === 'POST' && req.body && Object.keys(req.body).length > 0) {
     const bodyStr = JSON.stringify(req.body);
     if (bodyStr.length > 1000) {
-      Logger.debug(`[${requestId}] Request body (truncated)`, {
+      Logger.log(`[${requestId}] Request body (truncated)`, {
         size: bodyStr.length,
         preview: bodyStr.substring(0, 500) + '...'
       });
     } else {
-      Logger.debug(`[${requestId}] Request body`, req.body);
+      Logger.log(`[${requestId}] Request body`, req.body);
     }
   }
 
