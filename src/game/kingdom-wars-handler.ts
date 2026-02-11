@@ -10,6 +10,7 @@ import {
 import { Logger } from '../utils/logger';
 import { MCTSKingdomWars } from './mcts-kingdom-wars';
 import { GameTheoryNegotiation } from './game-theory-negotiation';
+import { EnemyResourceTracker } from './enemy-resource-tracker';
 
 /**
  * Kingdom Wars game handler
@@ -21,6 +22,7 @@ export class KingdomWarsHandler {
   private useGameTheory: boolean;
   private mcts: MCTSKingdomWars | null = null;
   private gameTheory: GameTheoryNegotiation | null = null;
+  private resourceTracker: EnemyResourceTracker;
 
   constructor(botInfo?: Partial<BotInfo>, useMCTS: boolean = false) {
     this.botInfo = {
@@ -42,6 +44,10 @@ export class KingdomWarsHandler {
       // Will be initialized with player ID from first request
       Logger.log('Game Theory enabled for negotiation phase');
     }
+
+    // Initialize resource tracker
+    this.resourceTracker = new EnemyResourceTracker();
+    Logger.log('Enemy Resource Tracker enabled');
   }
 
   /**
@@ -79,6 +85,26 @@ export class KingdomWarsHandler {
         res.status(400).json({ error: 'Invalid negotiation request' });
         return;
       }
+
+      // Update resource tracking
+      this.resourceTracker.updateEstimates(
+        request.gameId,
+        request.turn,
+        request.enemyTowers,
+        request.combatActions,
+        []
+      );
+
+      // Log resource estimates
+      const resourceEstimates = this.resourceTracker.getAllEstimates();
+      Logger.debug('Enemy resource estimates', {
+        estimates: Array.from(resourceEstimates.entries()).map(([id, est]) => ({
+          playerId: id,
+          estimatedResources: est.estimatedResources,
+          resourceGeneration: est.resourceGeneration,
+          level: est.lastKnownLevel
+        }))
+      });
 
       // Calculate negotiation strategy (use Game Theory if enabled, otherwise heuristic)
       let response: NegotiateResponse[];
@@ -189,6 +215,26 @@ export class KingdomWarsHandler {
         res.status(400).json({ error: 'Invalid combat request' });
         return;
       }
+
+      // Update resource tracking
+      this.resourceTracker.updateEstimates(
+        request.gameId,
+        request.turn,
+        request.enemyTowers,
+        [],
+        request.previousAttacks
+      );
+
+      // Use resource estimates for planning
+      const resourceEstimates = this.resourceTracker.getAllEstimates();
+      Logger.debug('Enemy resource estimates for combat', {
+        estimates: Array.from(resourceEstimates.entries()).map(([id, est]) => ({
+          playerId: id,
+          estimatedResources: est.estimatedResources,
+          canUpgrade: this.resourceTracker.canAffordUpgrade(id),
+          expectedAttackSize: est.spendingPattern.avgAttackSize || est.resourceGeneration * 0.5
+        }))
+      });
 
       // Calculate combat actions (use MCTS if enabled, otherwise heuristic)
       const startResources = request.playerTower.resources || 0;
@@ -360,18 +406,28 @@ export class KingdomWarsHandler {
       }
     }
     
-    // Attack weakest enemy if we have resources
+    // Attack best target using resource estimates
     if (remainingResources > 0) {
-      const target = this.findBestAttackTarget(enemyTowers, playerTower);
-      Logger.debug('Attack target evaluation', target ? {
+      const target = this.findBestAttackTargetWithResources(
+        enemyTowers, 
+        playerTower,
+        this.resourceTracker
+      );
+      Logger.debug('Attack target evaluation (with resource estimates)', target ? {
         targetId: target.playerId,
         targetHp: target.hp,
         targetArmor: target.armor,
-        availableResources: remainingResources
+        availableResources: remainingResources,
+        enemyEstimate: this.resourceTracker.getEstimate(target.playerId)
       } : 'No valid target');
       
       if (target) {
-        const attackAmount = Math.min(remainingResources, 30); // Reasonable attack size
+        // Use resource estimates to determine optimal attack size
+        const attackAmount = this.calculateOptimalAttackSize(
+          target,
+          remainingResources,
+          this.resourceTracker
+        );
         if (attackAmount > 0) {
           actions.push({
             type: 'attack',
@@ -379,10 +435,11 @@ export class KingdomWarsHandler {
             troopCount: attackAmount
           });
           remainingResources -= attackAmount;
-          Logger.debug('Attack action added', {
+          Logger.debug('Attack action added (resource-based)', {
             targetId: target.playerId,
             troopCount: attackAmount,
-            remaining: remainingResources
+            remaining: remainingResources,
+            reason: 'Using enemy resource estimates for optimal targeting'
           });
         }
       }
@@ -526,6 +583,88 @@ export class KingdomWarsHandler {
     });
     
     return bestTarget;
+  }
+
+  /**
+   * Find best attack target using resource estimates
+   */
+  private findBestAttackTargetWithResources(
+    enemyTowers: Tower[],
+    playerTower: Tower,
+    resourceTracker: EnemyResourceTracker
+  ): Tower | null {
+    let bestTarget: Tower | null = null;
+    let bestScore = Infinity;
+    
+    enemyTowers.forEach(enemy => {
+      const estimate = resourceTracker.getEstimate(enemy.playerId);
+      
+      // Base score: HP + armor (lower is better)
+      let score = enemy.hp + enemy.armor;
+      
+      // Adjust based on resource estimates
+      if (estimate) {
+        // Prioritize enemies who can upgrade (threat)
+        if (resourceTracker.canAffordUpgrade(enemy.playerId)) {
+          score -= 50; // Higher priority (lower score)
+        }
+        
+        // Prioritize enemies with high resources (can make big attacks)
+        if (estimate.estimatedResources > estimate.resourceGeneration * 2) {
+          score -= 30; // Higher priority
+        }
+        
+        // Prioritize enemies with low resources (easier to finish)
+        if (estimate.estimatedResources < estimate.resourceGeneration * 0.5) {
+          score += 20; // Lower priority (higher score)
+        }
+      }
+      
+      if (score < bestScore) {
+        bestScore = score;
+        bestTarget = enemy;
+      }
+    });
+    
+    return bestTarget || this.findBestAttackTarget(enemyTowers, playerTower);
+  }
+
+  /**
+   * Calculate optimal attack size based on enemy resources and state
+   */
+  private calculateOptimalAttackSize(
+    target: Tower,
+    availableResources: number,
+    resourceTracker: EnemyResourceTracker
+  ): number {
+    const estimate = resourceTracker.getEstimate(target.playerId);
+    
+    // Base attack: reasonable portion of resources
+    let attackSize = Math.min(availableResources, 30);
+    
+    if (estimate) {
+      // If enemy can upgrade, attack harder to prevent upgrade
+      if (resourceTracker.canAffordUpgrade(target.playerId)) {
+        attackSize = Math.min(availableResources, 40);
+      }
+      
+      // If enemy has low resources, smaller attack might be enough
+      if (estimate.estimatedResources < estimate.resourceGeneration * 0.5) {
+        attackSize = Math.min(attackSize, 20);
+      }
+      
+      // If enemy has high resources, attack harder
+      if (estimate.estimatedResources > estimate.resourceGeneration * 2) {
+        attackSize = Math.min(availableResources, 35);
+      }
+      
+      // Adjust based on enemy HP (finish them off)
+      if (target.hp < 30) {
+        attackSize = Math.min(attackSize, target.hp + target.armor + 5);
+      }
+    }
+    
+    return Math.max(5, Math.min(attackSize, availableResources));
   }
 
   private getUpgradeCost(level: number): number {
