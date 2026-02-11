@@ -42,8 +42,8 @@ export interface EnemyResourceEstimate {
 }
 
 export class EnemyResourceTracker {
-  private enemyEstimates: Map<number, EnemyResourceEstimate> = new Map();
-  private gameId: number | null = null;
+  // Track estimates per game: Map<gameId, Map<playerId, Estimate>>
+  private gameEstimates: Map<number, Map<number, EnemyResourceEstimate>> = new Map();
 
   /**
    * Update estimates based on current game state and actions
@@ -55,11 +55,11 @@ export class EnemyResourceTracker {
     combatActions: CombatAction[],
     previousAttacks: CombatAction[]
   ): void {
-    // Reset if new game
-    if (this.gameId !== gameId) {
-      this.enemyEstimates.clear();
-      this.gameId = gameId;
+    // Get or create estimates map for this game
+    if (!this.gameEstimates.has(gameId)) {
+      this.gameEstimates.set(gameId, new Map());
     }
+    const enemyEstimates = this.gameEstimates.get(gameId)!;
 
     // Process all actions from this turn
     const allActions = [...combatActions, ...previousAttacks];
@@ -71,7 +71,7 @@ export class EnemyResourceTracker {
         return;
       }
       
-      const estimate = this.getOrCreateEstimate(enemy);
+      const estimate = this.getOrCreateEstimate(enemy, enemyEstimates);
 
       // Detect level changes (upgrades)
       if (enemy.level > estimate.lastKnownLevel) {
@@ -177,9 +177,9 @@ export class EnemyResourceTracker {
   /**
    * Get or create estimate for enemy
    */
-  private getOrCreateEstimate(enemy: Tower): EnemyResourceEstimate {
-    if (!this.enemyEstimates.has(enemy.playerId)) {
-      this.enemyEstimates.set(enemy.playerId, {
+  private getOrCreateEstimate(enemy: Tower, estimates: Map<number, EnemyResourceEstimate>): EnemyResourceEstimate {
+    if (!estimates.has(enemy.playerId)) {
+      estimates.set(enemy.playerId, {
         playerId: enemy.playerId,
         estimatedResources: getResourceGeneration(enemy.level),
         resourceGeneration: getResourceGeneration(enemy.level),
@@ -196,28 +196,61 @@ export class EnemyResourceTracker {
         actionHistory: []
       });
     }
-    return this.enemyEstimates.get(enemy.playerId)!;
+    return estimates.get(enemy.playerId)!;
   }
 
   /**
-   * Get resource estimate for enemy
+   * Get resource estimate for enemy (from current/last game)
+   * Note: For multi-game support, use getEstimateForGame()
    */
   getEstimate(playerId: number): EnemyResourceEstimate | null {
-    return this.enemyEstimates.get(playerId) || null;
+    // Return from most recent game (for backward compatibility)
+    if (this.gameEstimates.size === 0) return null;
+    const lastGameId = Array.from(this.gameEstimates.keys())[this.gameEstimates.size - 1];
+    const estimates = this.gameEstimates.get(lastGameId);
+    return estimates?.get(playerId) || null;
   }
 
   /**
-   * Get all estimates
+   * Get resource estimate for enemy in specific game
+   */
+  getEstimateForGame(gameId: number, playerId: number): EnemyResourceEstimate | null {
+    const estimates = this.gameEstimates.get(gameId);
+    return estimates?.get(playerId) || null;
+  }
+
+  /**
+   * Get all estimates for a specific game
+   */
+  getAllEstimatesForGame(gameId: number): Map<number, EnemyResourceEstimate> {
+    return this.gameEstimates.get(gameId) || new Map();
+  }
+
+  /**
+   * Get all estimates (from current/last game, for backward compatibility)
    */
   getAllEstimates(): Map<number, EnemyResourceEstimate> {
-    return this.enemyEstimates;
+    if (this.gameEstimates.size === 0) return new Map();
+    const lastGameId = Array.from(this.gameEstimates.keys())[this.gameEstimates.size - 1];
+    return this.gameEstimates.get(lastGameId) || new Map();
   }
 
   /**
-   * Predict if enemy can afford upgrade
+   * Predict if enemy can afford upgrade (from current/last game)
    */
   canAffordUpgrade(playerId: number): boolean {
     const estimate = this.getEstimate(playerId);
+    if (!estimate) return false;
+    
+    const upgradeCost = getUpgradeCost(estimate.lastKnownLevel);
+    return estimate.estimatedResources >= upgradeCost;
+  }
+
+  /**
+   * Predict if enemy can afford upgrade in specific game
+   */
+  canAffordUpgradeForGame(gameId: number, playerId: number): boolean {
+    const estimate = this.getEstimateForGame(gameId, playerId);
     if (!estimate) return false;
     
     const upgradeCost = getUpgradeCost(estimate.lastKnownLevel);
@@ -275,10 +308,16 @@ export class EnemyResourceTracker {
   }
 
   /**
-   * Clear estimates (for new game)
+   * Clear estimates for a specific game
+   */
+  clearGame(gameId: number): void {
+    this.gameEstimates.delete(gameId);
+  }
+
+  /**
+   * Clear all estimates (for all games)
    */
   clear(): void {
-    this.enemyEstimates.clear();
-    this.gameId = null;
+    this.gameEstimates.clear();
   }
 }

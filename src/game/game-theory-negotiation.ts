@@ -18,8 +18,10 @@ import { Logger } from '../utils/logger';
  */
 export class GameTheoryNegotiation {
   private playerId: number;
-  private gameHistory: Map<number, GameHistory> = new Map();
-  private allianceHistory: Map<number, AllianceRecord> = new Map();
+  // Track history per game: Map<gameId, Map<playerId, GameHistory>>
+  private gameHistories: Map<number, Map<number, GameHistory>> = new Map();
+  // Track alliances per game: Map<gameId, Map<playerId, AllianceRecord>>
+  private allianceHistories: Map<number, Map<number, AllianceRecord>> = new Map();
 
   constructor(playerId: number) {
     this.playerId = playerId;
@@ -29,20 +31,20 @@ export class GameTheoryNegotiation {
    * Calculate negotiation strategy using game theory
    */
   calculateNegotiation(request: NegotiateRequest): NegotiateResponse[] {
-    const { playerTower, enemyTowers, combatActions, turn } = request;
+    const { playerTower, enemyTowers, combatActions, turn, gameId } = request;
     this.playerId = playerTower.playerId;
 
-    // Update game history
-    this.updateHistory(enemyTowers, combatActions, turn);
+    // Update game history (per gameId)
+    this.updateHistory(gameId, enemyTowers, combatActions, turn);
 
     // Analyze game state
-    const analysis = this.analyzeGameState(playerTower, enemyTowers, turn, combatActions);
+    const analysis = this.analyzeGameState(gameId, playerTower, enemyTowers, turn, combatActions);
 
     // Calculate payoffs for different strategies
-    const payoffs = this.calculatePayoffs(playerTower, enemyTowers, analysis);
+    const payoffs = this.calculatePayoffs(gameId, playerTower, enemyTowers, analysis);
 
     // Select best strategy using game theory
-    const strategy = this.selectStrategy(payoffs, analysis, turn);
+    const strategy = this.selectStrategy(gameId, payoffs, analysis, turn);
 
     // Form response
     const response: NegotiateResponse[] = [];
@@ -69,6 +71,7 @@ export class GameTheoryNegotiation {
    * Analyze current game state
    */
   private analyzeGameState(
+    gameId: number,
     playerTower: Tower,
     enemyTowers: Tower[],
     turn: number,
@@ -88,13 +91,14 @@ export class GameTheoryNegotiation {
 
     // Calculate alliance value
     const allianceValues = this.calculateAllianceValues(
+      gameId,
       playerTower,
       enemyTowers,
       threats
     );
 
     // Detect betrayal risk
-    const betrayalRisks = this.calculateBetrayalRisk(enemyTowers, turn);
+    const betrayalRisks = this.calculateBetrayalRisk(gameId, enemyTowers, turn);
 
     return {
       playerStrength,
@@ -157,6 +161,7 @@ export class GameTheoryNegotiation {
    * Calculate alliance values (how beneficial is allying with each player)
    */
   private calculateAllianceValues(
+    gameId: number,
     playerTower: Tower,
     enemyTowers: Tower[],
     threats: Map<number, ThreatLevel>
@@ -196,8 +201,9 @@ export class GameTheoryNegotiation {
         value -= 40;
       }
 
-      // Check alliance history
-      const history = this.allianceHistory.get(enemy.playerId);
+      // Check alliance history (per game)
+      const allianceHistory = this.allianceHistories.get(gameId);
+      const history = allianceHistory?.get(enemy.playerId);
       if (history) {
         if (history.cooperated) {
           value += 20; // Bonus for previous cooperation
@@ -223,6 +229,7 @@ export class GameTheoryNegotiation {
    * Calculate betrayal risk (how likely is each player to betray)
    */
   private calculateBetrayalRisk(
+    gameId: number,
     enemyTowers: Tower[],
     turn: number
   ): Map<number, number> {
@@ -247,8 +254,9 @@ export class GameTheoryNegotiation {
         risk += 0.2;
       }
 
-      // Check history
-      const history = this.allianceHistory.get(enemy.playerId);
+      // Check history (per game)
+      const allianceHistory = this.allianceHistories.get(gameId);
+      const history = allianceHistory?.get(enemy.playerId);
       if (history && history.betrayed) {
         risk += 0.4; // High risk if they've betrayed before
       }
@@ -263,6 +271,7 @@ export class GameTheoryNegotiation {
    * Calculate payoffs for different strategies
    */
   private calculatePayoffs(
+    gameId: number,
     playerTower: Tower,
     enemyTowers: Tower[],
     analysis: GameAnalysis
@@ -297,6 +306,7 @@ export class GameTheoryNegotiation {
 
       // Tit-for-Tat: Cooperate if they cooperated, defect if they defected
       const titForTatPayoff = this.calculateTitForTatPayoff(
+        gameId,
         allianceValue,
         threat,
         analysis,
@@ -377,12 +387,14 @@ export class GameTheoryNegotiation {
    * Calculate payoff for Tit-for-Tat strategy
    */
   private calculateTitForTatPayoff(
+    gameId: number,
     allianceValue: AllianceValue,
     threat: ThreatLevel | undefined,
     analysis: GameAnalysis,
     playerId: number
   ): number {
-    const history = this.allianceHistory.get(playerId);
+    const allianceHistory = this.allianceHistories.get(gameId);
+    const history = allianceHistory?.get(playerId);
     
     if (!history) {
       // No history: start with cooperation
@@ -430,6 +442,7 @@ export class GameTheoryNegotiation {
    * Select best strategy using game theory
    */
   private selectStrategy(
+    gameId: number,
     payoffs: StrategyPayoffs,
     analysis: GameAnalysis,
     turn: number
@@ -487,7 +500,8 @@ export class GameTheoryNegotiation {
         break;
 
       case 'titForTat':
-        const history = this.allianceHistory.get(bestOverall.playerId);
+        const allianceHistory = this.allianceHistories.get(gameId);
+        const history = allianceHistory?.get(bestOverall.playerId);
         if (history && history.cooperated) {
           allyId = bestOverall.playerId;
           const mutualThreats = Array.from(analysis.threats.values())
@@ -517,13 +531,20 @@ export class GameTheoryNegotiation {
   }
 
   /**
-   * Update game history
+   * Update game history (per gameId)
    */
   private updateHistory(
+    gameId: number,
     enemyTowers: Tower[],
     combatActions: CombatAction[],
     turn: number
   ): void {
+    // Get or create history maps for this game
+    if (!this.gameHistories.has(gameId)) {
+      this.gameHistories.set(gameId, new Map());
+    }
+    const gameHistory = this.gameHistories.get(gameId)!;
+
     // Track which players attacked us
     const attackers = new Set<number>();
     combatActions.forEach(action => {
@@ -540,8 +561,8 @@ export class GameTheoryNegotiation {
         return;
       }
       
-      if (!this.gameHistory.has(enemy.playerId)) {
-        this.gameHistory.set(enemy.playerId, {
+      if (!gameHistory.has(enemy.playerId)) {
+        gameHistory.set(enemy.playerId, {
           playerId: enemy.playerId,
           attacksOnUs: 0,
           turnsSinceLastAttack: Infinity,
@@ -550,7 +571,7 @@ export class GameTheoryNegotiation {
         });
       }
 
-      const history = this.gameHistory.get(enemy.playerId)!;
+      const history = gameHistory.get(enemy.playerId)!;
       
       if (attackers.has(enemy.playerId)) {
         history.attacksOnUs++;
@@ -566,12 +587,18 @@ export class GameTheoryNegotiation {
   }
 
   /**
-   * Update alliance history after negotiation
+   * Update alliance history after negotiation (per gameId)
    */
-  updateAllianceHistory(allyId: number | undefined, targetId: number | undefined): void {
+  updateAllianceHistory(gameId: number, allyId: number | undefined, targetId: number | undefined): void {
     if (allyId) {
-      if (!this.allianceHistory.has(allyId)) {
-        this.allianceHistory.set(allyId, {
+      // Get or create alliance history map for this game
+      if (!this.allianceHistories.has(gameId)) {
+        this.allianceHistories.set(gameId, new Map());
+      }
+      const allianceHistory = this.allianceHistories.get(gameId)!;
+
+      if (!allianceHistory.has(allyId)) {
+        allianceHistory.set(allyId, {
           playerId: allyId,
           cooperated: false,
           betrayed: false,
@@ -579,7 +606,7 @@ export class GameTheoryNegotiation {
         });
       }
 
-      const record = this.allianceHistory.get(allyId)!;
+      const record = allianceHistory.get(allyId)!;
       
       // If we're targeting our ally, that's betrayal
       if (targetId === allyId) {
@@ -593,40 +620,47 @@ export class GameTheoryNegotiation {
   }
 
   /**
-   * Check if player is our ally (has cooperated with us)
+   * Check if player is our ally (has cooperated with us) in specific game
    */
-  isAlly(playerId: number): boolean {
-    const record = this.allianceHistory.get(playerId);
+  isAlly(gameId: number, playerId: number): boolean {
+    const allianceHistory = this.allianceHistories.get(gameId);
+    if (!allianceHistory) return false;
+    const record = allianceHistory.get(playerId);
     return record ? record.cooperated && !record.betrayed : false;
   }
 
   /**
-   * Check if player has betrayed us
+   * Check if player has betrayed us in specific game
    */
-  hasBetrayed(playerId: number): boolean {
-    const record = this.allianceHistory.get(playerId);
+  hasBetrayed(gameId: number, playerId: number): boolean {
+    const allianceHistory = this.allianceHistories.get(gameId);
+    if (!allianceHistory) return false;
+    const record = allianceHistory.get(playerId);
     return record ? record.betrayed : false;
   }
 
   /**
-   * Get alliance record for player
+   * Get alliance record for player in specific game
    */
-  getAllianceRecord(playerId: number): AllianceRecord | null {
-    return this.allianceHistory.get(playerId) || null;
+  getAllianceRecord(gameId: number, playerId: number): AllianceRecord | null {
+    const allianceHistory = this.allianceHistories.get(gameId);
+    return allianceHistory?.get(playerId) || null;
   }
 
   /**
-   * Get game history for player
+   * Get game history for player in specific game
    */
-  getGameHistory(playerId: number): GameHistory | null {
-    return this.gameHistory.get(playerId) || null;
+  getGameHistory(gameId: number, playerId: number): GameHistory | null {
+    const gameHistory = this.gameHistories.get(gameId);
+    return gameHistory?.get(playerId) || null;
   }
 
   /**
-   * Get cooperation level (0-1, higher = more cooperative)
+   * Get cooperation level (0-1, higher = more cooperative) in specific game
    */
-  getCooperationLevel(playerId: number): number {
-    const history = this.gameHistory.get(playerId);
+  getCooperationLevel(gameId: number, playerId: number): number {
+    const gameHistory = this.gameHistories.get(gameId);
+    const history = gameHistory?.get(playerId);
     if (!history) return 0.5; // Neutral if no history
     
     const totalInteractions = history.cooperationCount + history.defectionCount;
@@ -636,10 +670,11 @@ export class GameTheoryNegotiation {
   }
 
   /**
-   * Predict if enemy will attack us (based on history)
+   * Predict if enemy will attack us (based on history) in specific game
    */
-  willLikelyAttackUs(playerId: number): boolean {
-    const history = this.gameHistory.get(playerId);
+  willLikelyAttackUs(gameId: number, playerId: number): boolean {
+    const gameHistory = this.gameHistories.get(gameId);
+    const history = gameHistory?.get(playerId);
     if (!history) return false;
     
     // If they recently attacked us, likely to attack again
@@ -648,7 +683,7 @@ export class GameTheoryNegotiation {
     }
     
     // If they have high defection rate, likely to attack
-    const cooperationLevel = this.getCooperationLevel(playerId);
+    const cooperationLevel = this.getCooperationLevel(gameId, playerId);
     return cooperationLevel < 0.3;
   }
 }

@@ -105,7 +105,7 @@ export class MultiTurnPlanner {
       state.playerTower.resources = state.resources;
 
       // Simulate opponent actions
-      state = this.simulateOpponentActions(state);
+      state = this.simulateOpponentActions(request.gameId, state);
 
       // Apply fatigue (turn 25+)
       if (state.turn >= 25) {
@@ -166,12 +166,12 @@ export class MultiTurnPlanner {
   /**
    * Simulate opponent actions probabilistically
    */
-  private simulateOpponentActions(state: SimulatedState): SimulatedState {
+  private simulateOpponentActions(gameId: number, state: SimulatedState): SimulatedState {
     for (const enemy of state.enemyTowers) {
       // Skip dead enemies (HP <= 0)
       if (enemy.hp <= 0) continue;
 
-      const estimate = this.resourceTracker.getEstimate(enemy.playerId);
+      const estimate = this.resourceTracker.getEstimateForGame(gameId, enemy.playerId);
       let enemyResources = estimate?.estimatedResources || this.getResourceGeneration(enemy.level);
 
       // Simulate upgrade (30% chance if can afford)
