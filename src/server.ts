@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express';
 import os from 'os';
 import { MoveHandler } from './game/move-handler';
+import { KingdomWarsHandler } from './game/kingdom-wars-handler';
+import { requestLogger } from './middleware/request-logger';
 
 const app = express();
 const PORT: number = parseInt(process.env.PORT || '3000', 10);
@@ -9,17 +11,37 @@ const PORT: number = parseInt(process.env.PORT || '3000', 10);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize move handler (strategy can be changed via env var)
+// Request logging middleware (must be after body parsing)
+app.use(requestLogger);
+
+// Initialize handlers
 const moveHandler = new MoveHandler(
   (process.env.AI_STRATEGY as 'minimax' | 'mcts' | 'greedy') || 'minimax'
 );
 
-// Game move endpoint - receives game state and returns optimal move
+const kingdomWarsHandler = new KingdomWarsHandler({
+  name: process.env.BOT_NAME || 'NIXathon2026 Bot',
+  version: process.env.BOT_VERSION || '1.0'
+});
+
+// Kingdom Wars endpoints
+app.post('/negotiate', async (req: Request, res: Response): Promise<void> => {
+  await kingdomWarsHandler.handleNegotiate(req, res);
+});
+
+app.post('/combat', async (req: Request, res: Response): Promise<void> => {
+  await kingdomWarsHandler.handleCombat(req, res);
+});
+
+app.get('/info', (req: Request, res: Response): void => {
+  kingdomWarsHandler.getBotInfo(req, res);
+});
+
+// Legacy game move endpoint (for other game types)
 app.post('/move', async (req: Request, res: Response): Promise<void> => {
   await moveHandler.handleMove(req, res);
 });
 
-// Alternative GET endpoint for move (if game state comes via query params)
 app.get('/move', async (req: Request, res: Response): Promise<void> => {
   await moveHandler.handleMove(req, res);
 });
@@ -53,6 +75,9 @@ app.get('/healthz', (req: Request, res: Response): void => {
 app.listen(PORT, (): void => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Health check endpoint: http://localhost:${PORT}/healthz`);
-  console.log(`Game move endpoint: http://localhost:${PORT}/move`);
+  console.log(`Kingdom Wars - Negotiate: http://localhost:${PORT}/negotiate`);
+  console.log(`Kingdom Wars - Combat: http://localhost:${PORT}/combat`);
+  console.log(`Kingdom Wars - Info: http://localhost:${PORT}/info`);
+  console.log(`Legacy move endpoint: http://localhost:${PORT}/move`);
   console.log(`AI Strategy: ${process.env.AI_STRATEGY || 'minimax'}`);
 });
