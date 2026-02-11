@@ -1,8 +1,11 @@
 /**
  * Enhanced logger utility for debugging and monitoring
+ * Logging is always enabled by default (no configuration needed)
  */
 export class Logger {
-  private static enabled: boolean = process.env.NODE_ENV !== 'production' || process.env.ENABLE_LOGGING === 'true';
+  // Always enabled - no need to configure
+  private static enabled: boolean = true;
+  // Default to 'info' level (can be overridden with LOG_LEVEL env var if needed)
   private static logLevel: string = process.env.LOG_LEVEL || 'info';
 
   private static shouldLog(level: string): boolean {
