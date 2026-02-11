@@ -20,7 +20,8 @@ export class Logger {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level.toUpperCase()}]`;
     if (data) {
-      return `${prefix} ${message} ${JSON.stringify(data, null, 2)}`;
+      // Write inline (single-line) JSON for easier real-time reading
+      return `${prefix} ${message} ${JSON.stringify(data)}`;
     }
     return `${prefix} ${message}`;
   }
