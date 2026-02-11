@@ -253,7 +253,13 @@ export class MCTSKingdomWars {
     }
 
     // Attack actions (different targets and amounts)
+    // Skip dead enemies (HP <= 0)
     for (const enemy of request.enemyTowers) {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        continue;
+      }
+      
       for (let troops = 5; troops <= Math.min(30, resources); troops += 5) {
         possibleActions.push({
           type: 'attack',

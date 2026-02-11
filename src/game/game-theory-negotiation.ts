@@ -129,7 +129,13 @@ export class GameTheoryNegotiation {
     });
 
     // Calculate threat level for each enemy
+    // Skip dead enemies (HP <= 0)
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const attackCount = attacksOnUs.get(enemy.playerId) || 0;
       const strength = enemy.hp + enemy.armor + (enemy.level * 10);
       const threatScore = attackCount * 2 + strength;
@@ -159,6 +165,11 @@ export class GameTheoryNegotiation {
     const playerStrength = playerTower.hp + playerTower.armor + (playerTower.level * 10);
 
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies (HP <= 0)
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const threat = threats.get(enemy.playerId);
       const enemyStrength = enemy.hp + enemy.armor + (enemy.level * 10);
       
@@ -218,6 +229,11 @@ export class GameTheoryNegotiation {
     const risks = new Map<number, number>();
 
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       let risk = 0.3; // Base betrayal risk
 
       // Late game: higher betrayal risk
@@ -517,7 +533,13 @@ export class GameTheoryNegotiation {
     });
 
     // Update history for each enemy
+    // Skip dead enemies (HP <= 0)
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       if (!this.gameHistory.has(enemy.playerId)) {
         this.gameHistory.set(enemy.playerId, {
           playerId: enemy.playerId,

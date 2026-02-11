@@ -64,8 +64,13 @@ export class EnemyResourceTracker {
     // Process all actions from this turn
     const allActions = [...combatActions, ...previousAttacks];
 
-    // Update each enemy
+    // Update each enemy (skip dead enemies)
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies (HP <= 0)
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const estimate = this.getOrCreateEstimate(enemy);
 
       // Detect level changes (upgrades)

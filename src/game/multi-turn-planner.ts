@@ -141,6 +141,10 @@ export class MultiTurnPlanner {
         state.playerTower.armor = (state.playerTower.armor || 0) + (action.amount || 0);
       } else if (action.type === 'attack') {
         const target = state.enemyTowers.find(e => e.playerId === action.targetId);
+        // Skip attacking dead enemies (HP <= 0)
+        if (target && target.hp <= 0) {
+          continue; // Don't waste resources on dead enemies
+        }
         if (target) {
           const damage = action.troopCount || 0;
           // Damage armor first, then HP
@@ -164,7 +168,8 @@ export class MultiTurnPlanner {
    */
   private simulateOpponentActions(state: SimulatedState): SimulatedState {
     for (const enemy of state.enemyTowers) {
-      if (enemy.hp <= 0) continue; // Dead enemy
+      // Skip dead enemies (HP <= 0)
+      if (enemy.hp <= 0) continue;
 
       const estimate = this.resourceTracker.getEstimate(enemy.playerId);
       let enemyResources = estimate?.estimatedResources || this.getResourceGeneration(enemy.level);

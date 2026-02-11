@@ -94,11 +94,21 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Update resource tracking
+      // Filter out dead players (HP <= 0) from all planning
+      const aliveEnemies = this.filterAliveEnemies(request.enemyTowers);
+      if (aliveEnemies.length !== request.enemyTowers.length) {
+        Logger.debug('Filtered out dead enemies', {
+          original: request.enemyTowers.length,
+          alive: aliveEnemies.length,
+          dead: request.enemyTowers.filter(e => e.hp <= 0).map(e => e.playerId)
+        });
+      }
+
+      // Update resource tracking (only for alive enemies)
       this.resourceTracker.updateEstimates(
         request.gameId,
         request.turn,
-        request.enemyTowers,
+        aliveEnemies,
         request.combatActions,
         []
       );
@@ -113,6 +123,12 @@ export class KingdomWarsHandler {
           level: est.lastKnownLevel
         }))
       });
+
+      // Create request with only alive enemies for planning
+      const planningRequest = {
+        ...request,
+        enemyTowers: aliveEnemies
+      };
 
       // Calculate negotiation strategy (use Game Theory if enabled, otherwise heuristic)
       let response: NegotiateResponse[];
@@ -131,22 +147,22 @@ export class KingdomWarsHandler {
           turn: request.turn
         });
 
-        response = this.gameTheory.calculateNegotiation(request);
+        response = this.gameTheory.calculateNegotiation(planningRequest);
         
         // Extract ally and target from response for logging
         if (response.length > 0) {
           const allyId = response[0].allyId;
           const targetId = response[0].attackTargetId;
           if (allyId) {
-            bestAlly = request.enemyTowers.find(e => e.playerId === allyId) || null;
+            bestAlly = aliveEnemies.find(e => e.playerId === allyId) || null;
           }
           if (targetId) {
-            bestTarget = request.enemyTowers.find(e => e.playerId === targetId) || null;
+            bestTarget = aliveEnemies.find(e => e.playerId === targetId) || null;
           }
         }
 
-        // Calculate threats for logging
-        threats = this.analyzeThreats(request.playerTower, request.enemyTowers, request.combatActions);
+        // Calculate threats for logging (only alive enemies)
+        threats = this.analyzeThreats(request.playerTower, aliveEnemies, request.combatActions);
 
         // Update alliance history
         if (response.length > 0) {
@@ -156,8 +172,8 @@ export class KingdomWarsHandler {
           );
         }
       } else {
-        // Use heuristic approach
-        const result = this.calculateNegotiationWithLogging(request);
+        // Use heuristic approach (with alive enemies only)
+        const result = this.calculateNegotiationWithLogging(planningRequest);
         response = result.response;
         threats = result.threats;
         bestAlly = result.bestAlly;
@@ -224,11 +240,21 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Update resource tracking
+      // Filter out dead players (HP <= 0) from all planning
+      const aliveEnemies = this.filterAliveEnemies(request.enemyTowers);
+      if (aliveEnemies.length !== request.enemyTowers.length) {
+        Logger.debug('Filtered out dead enemies from combat planning', {
+          original: request.enemyTowers.length,
+          alive: aliveEnemies.length,
+          dead: request.enemyTowers.filter(e => e.hp <= 0).map(e => e.playerId)
+        });
+      }
+
+      // Update resource tracking (only for alive enemies)
       this.resourceTracker.updateEstimates(
         request.gameId,
         request.turn,
-        request.enemyTowers,
+        aliveEnemies,
         [],
         request.previousAttacks
       );
@@ -244,6 +270,12 @@ export class KingdomWarsHandler {
         }))
       });
 
+      // Create request with only alive enemies for planning
+      const planningRequest = {
+        ...request,
+        enemyTowers: aliveEnemies
+      };
+
       // Calculate combat actions (use MCTS, lookahead, or heuristic)
       const startResources = request.playerTower.resources || 0;
       let actions: CombatResponseAction[];
@@ -254,7 +286,7 @@ export class KingdomWarsHandler {
           gameId: request.gameId,
           turn: request.turn
         });
-        const mctsActions = this.mcts.calculateBestActions(request);
+        const mctsActions = this.mcts.calculateBestActions(planningRequest);
         const spent = mctsActions.reduce((sum, action) => {
           return sum + this.getActionCost(action, request.playerTower.level);
         }, 0);
@@ -270,11 +302,11 @@ export class KingdomWarsHandler {
           turn: request.turn
         });
         
-        // Generate possible action combinations
-        const possibleActions = this.generateActionCombinations(request);
+        // Generate possible action combinations (with alive enemies only)
+        const possibleActions = this.generateActionCombinations(planningRequest);
         
         // Use lookahead planner to evaluate
-        const plannedActions = this.lookaheadPlanner.planCombatActions(request, possibleActions);
+        const plannedActions = this.lookaheadPlanner.planCombatActions(planningRequest, possibleActions);
         const spent = plannedActions.reduce((sum, action) => {
           return sum + this.getActionCost(action, request.playerTower.level);
         }, 0);
@@ -285,7 +317,8 @@ export class KingdomWarsHandler {
           spent
         };
       } else {
-        const result = this.calculateCombatActionsWithLogging(request);
+        // Use heuristic approach (with alive enemies only)
+        const result = this.calculateCombatActionsWithLogging(planningRequest);
         actions = result.actions;
         resourceUsage = result.resourceUsage;
       }
@@ -531,10 +564,16 @@ export class KingdomWarsHandler {
     threats: Map<number, number>
   ): Tower | null {
     // Find strongest enemy that isn't a major threat
+    // Skip dead enemies (HP <= 0)
     let bestAlly: Tower | null = null;
     let bestScore = -Infinity;
     
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const threatLevel = threats.get(enemy.playerId) || 0;
       // Prefer strong allies with low threat to us
       const score = enemy.hp + enemy.level * 10 - threatLevel;
@@ -556,6 +595,11 @@ export class KingdomWarsHandler {
     let bestScore = Infinity;
     
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const threatLevel = threats.get(enemy.playerId) || 0;
       // Prioritize high-threat, low-HP enemies
       const score = enemy.hp - threatLevel * 2;
@@ -604,10 +648,16 @@ export class KingdomWarsHandler {
     playerTower: Tower
   ): Tower | null {
     // Attack weakest enemy (lowest HP + armor)
+    // Skip dead enemies (HP <= 0)
     let bestTarget: Tower | null = null;
     let bestScore = Infinity;
     
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const score = enemy.hp + enemy.armor;
       if (score < bestScore) {
         bestScore = score;
@@ -631,6 +681,11 @@ export class KingdomWarsHandler {
     let bestScore: number = Infinity;
     
     enemyTowers.forEach(enemy => {
+      // Skip dead enemies (HP <= 0)
+      if (enemy.hp <= 0) {
+        return;
+      }
+      
       const estimate = resourceTracker.getEstimate(enemy.playerId);
       
       // Base score: HP + armor (lower is better)
@@ -784,6 +839,13 @@ export class KingdomWarsHandler {
     return Math.floor(50 * Math.pow(1.75, level - 1));
   }
 
+  /**
+   * Filter out dead enemies (HP <= 0) from planning
+   */
+  private filterAliveEnemies(enemyTowers: Tower[]): Tower[] {
+    return enemyTowers.filter(enemy => enemy.hp > 0);
+  }
+
   private getActionCost(action: CombatResponseAction, playerLevel: number = 1): number {
     if (action.type === 'upgrade') {
       return this.getUpgradeCost(playerLevel);
@@ -820,7 +882,13 @@ export class KingdomWarsHandler {
     }
 
     // Attack actions (different targets and amounts)
+    // Skip dead enemies (HP <= 0)
     for (const enemy of enemyTowers) {
+      // Skip dead enemies
+      if (enemy.hp <= 0) {
+        continue;
+      }
+      
       for (let troops = 10; troops <= Math.min(30, resources); troops += 10) {
         possibleActions.push({
           type: 'attack',
