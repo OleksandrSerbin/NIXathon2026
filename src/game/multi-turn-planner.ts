@@ -251,6 +251,121 @@ export class MultiTurnPlanner {
   }
 
   /**
+   * Predict future resource usage and damage over next N turns
+   * Returns predictions for resources, HP, and damage
+   */
+  predictFutureState(
+    request: CombatRequest,
+    currentActions: CombatResponseAction[] = []
+  ): {
+    expectedResources: number;
+    expectedHP: number;
+    expectedDamage: number;
+    expectedResourceSpending: number;
+    expectedResourceGeneration: number;
+    minResources: number; // Minimum resources we'll have
+    safeToUpgrade: boolean; // Can we afford upgrade and still be safe?
+  } {
+    // Simulate current turn with given actions
+    let state: SimulatedState = {
+      playerTower: { ...request.playerTower },
+      enemyTowers: request.enemyTowers.map(e => ({ ...e })),
+      turn: request.turn,
+      resources: request.playerTower.resources || 0,
+      score: 0
+    };
+
+    // Apply current actions
+    if (currentActions.length > 0) {
+      state = this.applyActions(state, currentActions);
+    }
+
+    const initialResources = state.resources;
+    const initialHP = state.playerTower.hp;
+    let totalDamage = 0;
+    let totalSpending = 0;
+    let minResources = state.resources;
+    const resourceGenerations: number[] = [];
+
+    // Simulate next N turns
+    for (let turn = 0; turn < this.maxTurns; turn++) {
+      state.turn++;
+      
+      // Regenerate resources
+      const generation = this.getResourceGeneration(state.playerTower.level);
+      state.resources += generation;
+      state.playerTower.resources = state.resources;
+      resourceGenerations.push(generation);
+
+      // Simulate opponent actions (predict damage and resource needs)
+      const beforeHP = state.playerTower.hp;
+      const beforeResources = state.resources;
+      
+      state = this.simulateOpponentActions(request.gameId, state);
+      
+      // Calculate damage taken
+      const damageTaken = beforeHP - state.playerTower.hp;
+      totalDamage += damageTaken;
+
+      // Predict our resource spending (simulate typical actions)
+      const predictedSpending = this.predictOurSpending(state, request.turn + turn);
+      totalSpending += predictedSpending;
+      state.resources = Math.max(0, state.resources - predictedSpending);
+      
+      // Track minimum resources
+      minResources = Math.min(minResources, state.resources);
+
+      // Apply fatigue (turn 25+)
+      if (state.turn >= 25) {
+        const fatigueDamage = (state.turn - 25) * 2;
+        state.playerTower.hp = Math.max(0, state.playerTower.hp - fatigueDamage);
+        totalDamage += fatigueDamage;
+      }
+    }
+
+    const expectedResourceGeneration = resourceGenerations.reduce((sum, gen) => sum + gen, 0);
+    const expectedResources = state.resources;
+    const expectedHP = state.playerTower.hp;
+    
+    // Determine if safe to upgrade
+    // Safe if: HP will be > 50, and we'll have enough resources for essential actions
+    const safeToUpgrade = expectedHP > 50 && minResources >= 20; // Keep at least 20 for emergencies
+
+    return {
+      expectedResources,
+      expectedHP,
+      expectedDamage: totalDamage,
+      expectedResourceSpending: totalSpending,
+      expectedResourceGeneration,
+      minResources,
+      safeToUpgrade
+    };
+  }
+
+  /**
+   * Predict our resource spending in a future turn
+   */
+  private predictOurSpending(state: SimulatedState, turn: number): number {
+    let spending = 0;
+    const resources = state.resources;
+
+    // Predict armor spending (if low HP or late game)
+    if ((state.playerTower.hp < 60 || turn >= 25) && state.playerTower.armor < 10) {
+      spending += Math.min(10, resources * 0.3); // Spend up to 30% on armor
+    }
+
+    // Predict attack spending (typical attack size)
+    const remaining = resources - spending;
+    if (remaining > 0) {
+      // Typical attack: 20-30% of resources
+      const attackSize = Math.min(30, Math.floor(remaining * 0.25));
+      spending += attackSize;
+    }
+
+    return spending;
+  }
+
+  /**
    * Plan negotiation with multi-turn lookahead
    */
   planNegotiation(

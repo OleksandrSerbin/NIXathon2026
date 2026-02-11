@@ -433,14 +433,16 @@ export class KingdomWarsHandler {
       turn
     });
     
-    // Check if we can and should upgrade
+    // Check if we can and should upgrade (using multi-turn lookahead)
     const upgradeCost = this.getUpgradeCost(playerTower.level);
-    const shouldUpgrade = this.shouldUpgrade(playerTower, enemyTowers, turn);
-    Logger.debug('Upgrade evaluation', {
+    const shouldUpgrade = this.shouldUpgradeWithLookahead(request, remainingResources, upgradeCost);
+    Logger.debug('Upgrade evaluation (with lookahead)', {
       upgradeCost,
       canAfford: remainingResources >= upgradeCost,
       shouldUpgrade,
-      reason: shouldUpgrade ? 'Meets upgrade criteria' : 'Does not meet upgrade criteria'
+      currentResources: remainingResources,
+      currentHP: playerTower.hp,
+      currentLevel: playerTower.level
     });
     
     if (remainingResources >= upgradeCost && shouldUpgrade) {
@@ -615,6 +617,81 @@ export class KingdomWarsHandler {
     return bestTarget;
   }
 
+  /**
+   * Determine if we should upgrade using multi-turn lookahead prediction
+   */
+  private shouldUpgradeWithLookahead(
+    request: CombatRequest,
+    availableResources: number,
+    upgradeCost: number
+  ): boolean {
+    const { playerTower, enemyTowers, turn } = request;
+    
+    // Basic safety check: must have enough resources and HP
+    if (availableResources < upgradeCost || playerTower.hp <= 50) {
+      return false;
+    }
+
+    // Use multi-turn lookahead to predict future state
+    if (this.useLookahead && this.lookaheadPlanner) {
+      // Predict future state WITHOUT upgrading
+      const futureWithoutUpgrade = this.lookaheadPlanner.predictFutureState(request, []);
+      
+      // Predict future state WITH upgrading
+      const futureWithUpgrade = this.lookaheadPlanner.predictFutureState(request, [
+        { type: 'upgrade' }
+      ]);
+
+      Logger.debug('Upgrade lookahead prediction', {
+        withoutUpgrade: {
+          expectedHP: futureWithoutUpgrade.expectedHP,
+          expectedResources: futureWithoutUpgrade.expectedResources,
+          minResources: futureWithoutUpgrade.minResources,
+          expectedDamage: futureWithoutUpgrade.expectedDamage
+        },
+        withUpgrade: {
+          expectedHP: futureWithUpgrade.expectedHP,
+          expectedResources: futureWithUpgrade.expectedResources,
+          minResources: futureWithUpgrade.minResources,
+          expectedDamage: futureWithUpgrade.expectedDamage,
+          expectedResourceGeneration: futureWithUpgrade.expectedResourceGeneration
+        }
+      });
+
+      // Upgrade if:
+      // 1. We'll still be safe (HP > 50) after upgrade
+      // 2. We'll have enough resources for next 3 turns
+      // 3. The upgrade provides benefit (more resource generation or better survival)
+      const willBeSafe = futureWithUpgrade.expectedHP > 50;
+      const willHaveResources = futureWithUpgrade.minResources >= 20; // Keep emergency buffer
+      const providesBenefit = 
+        futureWithUpgrade.expectedResourceGeneration > futureWithoutUpgrade.expectedResourceGeneration ||
+        futureWithUpgrade.expectedHP > futureWithoutUpgrade.expectedHP ||
+        futureWithUpgrade.expectedDamage < futureWithoutUpgrade.expectedDamage;
+
+      if (willBeSafe && willHaveResources && providesBenefit) {
+        Logger.debug('Upgrade approved by lookahead', {
+          reason: 'Safe HP, sufficient resources, and provides benefit',
+          resourceGenIncrease: futureWithUpgrade.expectedResourceGeneration - futureWithoutUpgrade.expectedResourceGeneration
+        });
+        return true;
+      }
+
+      Logger.debug('Upgrade rejected by lookahead', {
+        willBeSafe,
+        willHaveResources,
+        providesBenefit
+      });
+      return false;
+    }
+
+    // Fallback to simple heuristic if lookahead not available
+    return this.shouldUpgrade(playerTower, enemyTowers, turn);
+  }
+
+  /**
+   * Simple upgrade heuristic (fallback when lookahead not available)
+   */
   private shouldUpgrade(
     playerTower: Tower,
     enemyTowers: Tower[],
