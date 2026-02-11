@@ -8,6 +8,8 @@ import {
   BotInfo
 } from '../types/kingdom-wars';
 import { Logger } from '../utils/logger';
+import { MCTSKingdomWars } from './mcts-kingdom-wars';
+import { GameTheoryNegotiation } from './game-theory-negotiation';
 
 /**
  * Kingdom Wars game handler
@@ -15,13 +17,31 @@ import { Logger } from '../utils/logger';
  */
 export class KingdomWarsHandler {
   private botInfo: BotInfo;
+  private useMCTS: boolean;
+  private useGameTheory: boolean;
+  private mcts: MCTSKingdomWars | null = null;
+  private gameTheory: GameTheoryNegotiation | null = null;
 
-  constructor(botInfo?: Partial<BotInfo>) {
+  constructor(botInfo?: Partial<BotInfo>, useMCTS: boolean = false) {
     this.botInfo = {
       name: botInfo?.name || 'NIXathon2026 Bot',
       strategy: 'AI-trapped-strategy', // Required by game server
       version: botInfo?.version || '1.0'
     };
+    this.useMCTS = useMCTS || process.env.USE_MCTS === 'true';
+    this.useGameTheory = process.env.USE_GAME_THEORY !== 'false'; // Default: enabled
+    
+    if (this.useMCTS) {
+      const iterations = parseInt(process.env.MCTS_ITERATIONS || '500', 10);
+      const timeLimit = parseInt(process.env.MCTS_TIME_LIMIT_MS || '800', 10);
+      this.mcts = new MCTSKingdomWars(iterations, 1.41, timeLimit);
+      Logger.log('MCTS enabled for combat phase', { iterations, timeLimit });
+    }
+
+    if (this.useGameTheory) {
+      // Will be initialized with player ID from first request
+      Logger.log('Game Theory enabled for negotiation phase');
+    }
   }
 
   /**
@@ -60,8 +80,55 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Calculate negotiation strategy with detailed logging
-      const { response, threats, bestAlly, bestTarget } = this.calculateNegotiationWithLogging(request);
+      // Calculate negotiation strategy (use Game Theory if enabled, otherwise heuristic)
+      let response: NegotiateResponse[];
+      let threats: Map<number, number>;
+      let bestAlly: Tower | null = null;
+      let bestTarget: Tower | null = null;
+
+      if (this.useGameTheory) {
+        // Initialize game theory if needed
+        if (!this.gameTheory) {
+          this.gameTheory = new GameTheoryNegotiation(request.playerTower.playerId);
+        }
+
+        Logger.log('Using Game Theory for negotiation', {
+          gameId: request.gameId,
+          turn: request.turn
+        });
+
+        response = this.gameTheory.calculateNegotiation(request);
+        
+        // Extract ally and target from response for logging
+        if (response.length > 0) {
+          const allyId = response[0].allyId;
+          const targetId = response[0].attackTargetId;
+          if (allyId) {
+            bestAlly = request.enemyTowers.find(e => e.playerId === allyId) || null;
+          }
+          if (targetId) {
+            bestTarget = request.enemyTowers.find(e => e.playerId === targetId) || null;
+          }
+        }
+
+        // Calculate threats for logging
+        threats = this.analyzeThreats(request.playerTower, request.enemyTowers, request.combatActions);
+
+        // Update alliance history
+        if (response.length > 0) {
+          this.gameTheory.updateAllianceHistory(
+            response[0].allyId,
+            response[0].attackTargetId
+          );
+        }
+      } else {
+        // Use heuristic approach
+        const result = this.calculateNegotiationWithLogging(request);
+        response = result.response;
+        threats = result.threats;
+        bestAlly = result.bestAlly;
+        bestTarget = result.bestTarget;
+      }
 
       const processingTime = Date.now() - startTime;
       
@@ -123,9 +190,31 @@ export class KingdomWarsHandler {
         return;
       }
 
-      // Calculate combat actions with detailed logging
+      // Calculate combat actions (use MCTS if enabled, otherwise heuristic)
       const startResources = request.playerTower.resources || 0;
-      const { actions, resourceUsage } = this.calculateCombatActionsWithLogging(request);
+      let actions: CombatResponseAction[];
+      let resourceUsage: { start: number; remaining: number; spent: number };
+      
+      if (this.useMCTS && this.mcts) {
+        Logger.log('Using MCTS for combat decision', {
+          gameId: request.gameId,
+          turn: request.turn
+        });
+        const mctsActions = this.mcts.calculateBestActions(request);
+        const spent = mctsActions.reduce((sum, action) => {
+          return sum + this.getActionCost(action, request.playerTower.level);
+        }, 0);
+        actions = mctsActions;
+        resourceUsage = {
+          start: startResources,
+          remaining: startResources - spent,
+          spent
+        };
+      } else {
+        const result = this.calculateCombatActionsWithLogging(request);
+        actions = result.actions;
+        resourceUsage = result.resourceUsage;
+      }
 
       const processingTime = Date.now() - startTime;
       
@@ -442,6 +531,17 @@ export class KingdomWarsHandler {
   private getUpgradeCost(level: number): number {
     // Cost: 50 × (1.75 ^ (level - 1))
     return Math.floor(50 * Math.pow(1.75, level - 1));
+  }
+
+  private getActionCost(action: CombatResponseAction, playerLevel: number = 1): number {
+    if (action.type === 'upgrade') {
+      return this.getUpgradeCost(playerLevel);
+    } else if (action.type === 'armor') {
+      return action.amount || 0;
+    } else if (action.type === 'attack') {
+      return action.troopCount || 0;
+    }
+    return 0;
   }
 
   private isValidNegotiateRequest(request: any): boolean {

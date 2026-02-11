@@ -19,10 +19,13 @@ const moveHandler = new MoveHandler(
   (process.env.AI_STRATEGY as 'minimax' | 'mcts' | 'greedy') || 'minimax'
 );
 
-const kingdomWarsHandler = new KingdomWarsHandler({
-  name: process.env.BOT_NAME || 'NIXathon2026 Bot',
-  version: process.env.BOT_VERSION || '1.0'
-});
+const kingdomWarsHandler = new KingdomWarsHandler(
+  {
+    name: process.env.BOT_NAME || 'NIXathon2026 Bot',
+    version: process.env.BOT_VERSION || '1.0'
+  },
+  process.env.USE_MCTS === 'true' // Enable MCTS for combat phase
+);
 
 // Kingdom Wars endpoints
 app.post('/negotiate', async (req: Request, res: Response): Promise<void> => {
@@ -80,4 +83,10 @@ app.listen(PORT, (): void => {
   console.log(`Kingdom Wars - Info: http://localhost:${PORT}/info`);
   console.log(`Legacy move endpoint: http://localhost:${PORT}/move`);
   console.log(`AI Strategy: ${process.env.AI_STRATEGY || 'minimax'}`);
+  console.log(`MCTS Enabled: ${process.env.USE_MCTS === 'true' ? 'Yes' : 'No'}`);
+  if (process.env.USE_MCTS === 'true') {
+    console.log(`MCTS Iterations: ${process.env.MCTS_ITERATIONS || '500'}`);
+    console.log(`MCTS Time Limit: ${process.env.MCTS_TIME_LIMIT_MS || '800'}ms`);
+  }
+  console.log(`Game Theory Enabled: ${process.env.USE_GAME_THEORY !== 'false' ? 'Yes' : 'No'}`);
 });
