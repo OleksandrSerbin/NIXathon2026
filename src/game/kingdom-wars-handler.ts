@@ -53,7 +53,7 @@ export class KingdomWarsHandler {
     Logger.log('Enemy Resource Tracker enabled');
 
     // Initialize lookahead planner with optimized settings
-    const maxTurns = 3;
+    const maxTurns = 5; // Increased from 3 to 5 for better long-term planning
     this.lookaheadPlanner = new MultiTurnPlanner(maxTurns, this.resourceTracker);
     Logger.log('Multi-turn lookahead enabled', { maxTurns });
   }
@@ -691,12 +691,41 @@ export class KingdomWarsHandler {
         { type: 'upgrade' }
       ]);
 
-      Logger.debug('Upgrade lookahead prediction', {
+      // Calculate resource generation increase value
+      const initialLevel = playerTower.level;
+      const finalLevelWithUpgrade = futureWithUpgrade.finalLevel;
+      const finalLevelWithoutUpgrade = futureWithoutUpgrade.finalLevel;
+      const levelIncrease = finalLevelWithUpgrade - finalLevelWithoutUpgrade;
+      
+      // Calculate per-turn resource generation increase
+      const genWithoutUpgrade = futureWithoutUpgrade.resourceGenerationPerTurn[0] || 0;
+      const genWithUpgrade = futureWithUpgrade.resourceGenerationPerTurn[0] || 0;
+      const genIncreasePerTurnCalc = genWithUpgrade - genWithoutUpgrade;
+      
+      // Total resource generation increase over lookahead period
+      const totalGenIncrease = futureWithUpgrade.expectedResourceGeneration - futureWithoutUpgrade.expectedResourceGeneration;
+      
+      Logger.debug('Upgrade lookahead prediction with income calculation', {
+        currentLevel: initialLevel,
+        levelAfterUpgrade: finalLevelWithUpgrade,
+        levelWithoutUpgrade: finalLevelWithoutUpgrade,
+        levelIncrease,
+        resourceGenPerTurn: {
+          withoutUpgrade: genWithoutUpgrade,
+          withUpgrade: genWithUpgrade,
+          increase: genIncreasePerTurnCalc
+        },
+        totalResourceGenIncrease: totalGenIncrease,
+        resourceGenPerTurnBreakdown: {
+          withoutUpgrade: futureWithoutUpgrade.resourceGenerationPerTurn,
+          withUpgrade: futureWithUpgrade.resourceGenerationPerTurn
+        },
         withoutUpgrade: {
           expectedHP: futureWithoutUpgrade.expectedHP,
           expectedResources: futureWithoutUpgrade.expectedResources,
           minResources: futureWithoutUpgrade.minResources,
-          expectedDamage: futureWithoutUpgrade.expectedDamage
+          expectedDamage: futureWithoutUpgrade.expectedDamage,
+          expectedResourceGeneration: futureWithoutUpgrade.expectedResourceGeneration
         },
         withUpgrade: {
           expectedHP: futureWithUpgrade.expectedHP,
@@ -712,31 +741,41 @@ export class KingdomWarsHandler {
       const minSafeHP = turn <= 5 ? 60 : turn <= 10 ? 55 : 50;
       const willBeSafe = futureWithUpgrade.expectedHP > minSafeHP;
       
-      // 2. We'll have enough resources for next 3 turns (lower threshold early game)
+      // 2. We'll have enough resources for next 5 turns (lower threshold early game)
       const minResources = turn <= 10 ? 15 : 20; // More aggressive early game
       const willHaveResources = futureWithUpgrade.minResources >= minResources;
       
       // 3. The upgrade provides benefit (more resource generation or better survival)
-      const resourceGenIncrease = futureWithUpgrade.expectedResourceGeneration - futureWithoutUpgrade.expectedResourceGeneration;
+      // Calculate resource generation increase value (already calculated above)
+      const resourceGenIncrease = totalGenIncrease; // Total additional resources generated over lookahead
       const hpImprovement = futureWithUpgrade.expectedHP - futureWithoutUpgrade.expectedHP;
       const damageReduction = futureWithoutUpgrade.expectedDamage - futureWithUpgrade.expectedDamage;
+      
+      // Calculate upgrade value: resource generation increase over lookahead period
+      const upgradeValue = resourceGenIncrease; // Total additional resources generated over lookahead
+      const netValue = upgradeValue - upgradeCost; // Net value (may be negative initially, but pays off long-term)
       
       const providesBenefit = 
         resourceGenIncrease > 0 || // Resource generation increase
         hpImprovement > 0 || // HP improvement
         damageReduction > 0; // Damage reduction
       
-      // Early game: Upgrade if safe and provides ANY benefit
+      // Early game: Upgrade if safe and provides ANY benefit OR positive net value
       // Late game: Upgrade only if significant benefit
       const isEarlyGame = turn <= 10;
       const significantBenefit = resourceGenIncrease >= 10 || hpImprovement >= 5 || damageReduction >= 5;
+      const hasPositiveValue = netValue > 0 || resourceGenIncrease >= upgradeCost * 0.5; // At least 50% ROI
       
-      if (willBeSafe && willHaveResources && (isEarlyGame ? providesBenefit : significantBenefit)) {
+      if (willBeSafe && willHaveResources && (isEarlyGame ? (providesBenefit || hasPositiveValue) : significantBenefit)) {
         Logger.debug('Upgrade approved by lookahead', {
-          reason: isEarlyGame ? 'Early game: safe HP and provides benefit' : 'Late game: safe HP and significant benefit',
-          resourceGenIncrease,
+          reason: isEarlyGame ? 'Early game: safe HP and provides benefit/positive value' : 'Late game: safe HP and significant benefit',
+          upgradeCost,
+          upgradeValue: resourceGenIncrease,
+          genIncreasePerTurn: genIncreasePerTurnCalc,
+          netValue,
           hpImprovement,
-          damageReduction
+          damageReduction,
+          roi: upgradeCost > 0 ? ((resourceGenIncrease / upgradeCost) * 100).toFixed(1) + '%' : 'N/A'
         });
         return true;
       }

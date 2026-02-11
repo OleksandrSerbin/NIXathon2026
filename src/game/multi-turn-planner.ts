@@ -286,8 +286,10 @@ export class MultiTurnPlanner {
     expectedDamage: number;
     expectedResourceSpending: number;
     expectedResourceGeneration: number;
+    resourceGenerationPerTurn: number[]; // Resource generation for each turn
     minResources: number; // Minimum resources we'll have
     safeToUpgrade: boolean; // Can we afford upgrade and still be safe?
+    finalLevel: number; // Final level after lookahead (accounts for upgrades)
   } {
     // Simulate current turn with given actions
     let state: SimulatedState = {
@@ -349,10 +351,35 @@ export class MultiTurnPlanner {
     const expectedResourceGeneration = resourceGenerations.reduce((sum, gen) => sum + gen, 0);
     const expectedResources = state.resources;
     const expectedHP = state.playerTower.hp;
+    const finalLevel = state.playerTower.level; // Final level after lookahead (accounts for upgrades)
     
     // Determine if safe to upgrade
     // Safe if: HP will be > 50, and we'll have enough resources for essential actions
     const safeToUpgrade = expectedHP > 50 && minResources >= 20; // Keep at least 20 for emergencies
+
+    // Log resource generation details if upgrade was applied
+    const hasUpgrade = currentActions.some(a => a.type === 'upgrade');
+    if (hasUpgrade) {
+      const initialLevel = request.playerTower.level;
+      const levelIncrease = finalLevel - initialLevel;
+      const initialGen = this.getResourceGeneration(initialLevel);
+      const finalGen = this.getResourceGeneration(finalLevel);
+      const genIncreasePerTurn = finalGen - initialGen;
+      const totalGenIncrease = genIncreasePerTurn * this.maxTurns;
+      
+      Logger.debug('Upgrade resource generation calculation', {
+        initialLevel,
+        finalLevel,
+        levelIncrease,
+        initialGenPerTurn: initialGen,
+        finalGenPerTurn: finalGen,
+        genIncreasePerTurn,
+        totalGenIncrease,
+        turnsSimulated: this.maxTurns,
+        resourceGenerationsPerTurn: resourceGenerations,
+        totalResourceGeneration: expectedResourceGeneration
+      });
+    }
 
     return {
       expectedResources,
@@ -360,8 +387,10 @@ export class MultiTurnPlanner {
       expectedDamage: totalDamage,
       expectedResourceSpending: totalSpending,
       expectedResourceGeneration,
+      resourceGenerationPerTurn: resourceGenerations, // Per-turn breakdown
       minResources,
-      safeToUpgrade
+      safeToUpgrade,
+      finalLevel // Final level after lookahead
     };
   }
 
