@@ -278,13 +278,18 @@ export class MCTSKingdomWars {
       const hp = playerTower.hp;
       
       // Calculate recommended armor amount based on HP
+      // IMPROVED: More aggressive armor targets
       let targetArmor = 10; // Default target
-      if (hp < 40) {
+      if (hp < 30) {
         targetArmor = 20; // CRITICAL: Very low HP, need more armor
-      } else if (hp < 60) {
+      } else if (hp < 50) {
         targetArmor = 15; // HIGH: Low HP, need good armor
+      } else if (hp < 60) {
+        targetArmor = 10; // MEDIUM: Moderate HP, build proactively
       } else if (request.turn >= 25) {
-        targetArmor = 10; // LATE GAME: Fatigue damage
+        targetArmor = 15; // LATE GAME: Higher target for fatigue damage
+      } else if (request.turn >= 20) {
+        targetArmor = 10; // PREPARE: Build buffer for late game
       }
       
       const neededArmor = Math.max(0, targetArmor - currentArmor);
@@ -614,55 +619,79 @@ export class MCTSKingdomWars {
   /**
    * Helper methods (same as in kingdom-wars-handler)
    */
+  /**
+   * IMPROVED: More aggressive upgrade strategy
+   */
   private shouldUpgrade(
     playerTower: Tower,
     enemyTowers: Tower[],
     turn: number
   ): boolean {
+    const hp = playerTower.hp;
+    const level = playerTower.level;
     const avgEnemyLevel = enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length;
-    const isBehind = playerTower.level < avgEnemyLevel;
-    const isSafe = playerTower.hp > 50;
-    const isEarlyGame = turn < 20;
-    const isMidGame = turn >= 20 && turn < 30;
+    const isBehind = level < avgEnemyLevel;
+    const isVeryBehind = level < avgEnemyLevel - 0.5;
     
-    // More aggressive upgrade strategy:
-    // - Early game: Always upgrade if safe
-    // - Mid game: Upgrade if behind or safe
-    // - Late game: Upgrade if behind (but less priority)
-    if (isEarlyGame) {
-      return isSafe; // Early game: upgrade if safe
-    } else if (isMidGame) {
-      return (isBehind || isSafe) && isSafe; // Mid game: upgrade if behind or safe
-    } else {
-      return isBehind && isSafe; // Late game: only if behind
+    // CRITICAL: Very early game (turns 0-5) - upgrade ASAP if safe
+    if (turn <= 5 && hp > 60) {
+      return true; // Aggressive early upgrade
     }
+    
+    // HIGH PRIORITY: Early game (turns 6-10) - upgrade if safe
+    if (turn <= 10 && hp > 55) {
+      return true; // Upgrade early for resource generation advantage
+    }
+    
+    // MEDIUM PRIORITY: Mid game (turns 11-20) - upgrade if safe or behind
+    if (turn <= 20 && hp > 50) {
+      return isBehind || hp > 60; // Upgrade if behind or very safe
+    }
+    
+    // LATE GAME: Only upgrade if very behind (resource generation critical)
+    if (turn > 20) {
+      return isVeryBehind && hp > 50; // Only if significantly behind
+    }
+    
+    return false;
   }
 
   /**
    * Enhanced armor decision prioritizing survival
    * Main goal: Stay alive - build armor when needed for survival
+   * IMPROVED: More proactive defense strategy
    */
   private shouldBuildArmor(playerTower: Tower, turn: number): boolean {
     const hp = playerTower.hp;
     const armor = playerTower.armor || 0;
     
     // CRITICAL: Very low HP - always build armor if possible
-    if (hp < 40) {
+    if (hp < 30) {
       return armor < 20; // Try to get to 20 armor
     }
     
-    // HIGH PRIORITY: Low HP - build armor
-    if (hp < 60) {
+    // HIGH PRIORITY: Low HP - build armor proactively
+    if (hp < 50) {
       return armor < 15; // Try to get to 15 armor
     }
     
-    // LATE GAME: Fatigue damage requires armor
+    // MEDIUM-HIGH PRIORITY: Moderate HP - build armor proactively
+    if (hp < 60) {
+      return armor < 10; // Build armor proactively, not reactively
+    }
+    
+    // LATE GAME: Fatigue damage requires armor - BUILD MAX
     if (turn >= 25) {
-      return armor < 10; // Minimum 10 armor for late game
+      return armor < 15; // Higher target (15) for late game
+    }
+    
+    // PREPARE FOR LATE GAME: Turn 20-24, build armor buffer
+    if (turn >= 20 && turn < 25) {
+      return armor < 10; // Prepare for late game
     }
     
     // MEDIUM PRIORITY: Low armor maintenance
-    if (armor < 5 && hp > 50) {
+    if (armor < 5 && hp > 60) {
       return true; // Build minimal armor
     }
     

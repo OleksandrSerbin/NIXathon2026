@@ -376,20 +376,29 @@ export class MultiTurnPlanner {
     const armor = state.playerTower.armor || 0;
 
     // PRIORITY 1: Defense/Armor (Survival is main goal)
+    // IMPROVED: More proactive defense strategy
     // CRITICAL: Very low HP - prioritize armor heavily
-    if (hp < 40 && armor < 20) {
+    if (hp < 30 && armor < 20) {
       spending += Math.min(10, resources * 0.5); // Spend up to 50% on armor
     }
-    // HIGH: Low HP - prioritize armor
-    else if (hp < 60 && armor < 15) {
+    // HIGH: Low HP - prioritize armor proactively
+    else if (hp < 50 && armor < 15) {
+      spending += Math.min(10, resources * 0.5); // Spend up to 50% on armor
+    }
+    // MEDIUM-HIGH: Moderate HP - build armor proactively
+    else if (hp < 60 && armor < 10) {
       spending += Math.min(10, resources * 0.4); // Spend up to 40% on armor
     }
-    // LATE GAME: Fatigue damage requires armor
-    else if (turn >= 25 && armor < 10) {
+    // LATE GAME: Fatigue damage requires armor - BUILD MAX
+    else if (turn >= 25 && armor < 15) {
+      spending += Math.min(10, resources * 0.4); // Spend up to 40% on armor (higher target)
+    }
+    // PREPARE FOR LATE GAME: Turn 20-24, build armor buffer
+    else if (turn >= 20 && turn < 25 && armor < 10) {
       spending += Math.min(10, resources * 0.3); // Spend up to 30% on armor
     }
     // MEDIUM: Low armor maintenance
-    else if (armor < 5 && hp > 50) {
+    else if (armor < 5 && hp > 60) {
       spending += Math.min(5, resources * 0.2); // Spend up to 20% on minimal armor
     }
 

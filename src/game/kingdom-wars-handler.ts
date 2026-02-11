@@ -493,11 +493,21 @@ export class KingdomWarsHandler {
       safeToUpgrade: futureState.safeToUpgrade
     });
     
-    // Only upgrade if safe (HP will be > 50 after predicted damage)
-    if (remainingResources >= upgradeCost && shouldUpgrade && futureState.safeToUpgrade) {
+    // IMPROVED: More aggressive upgrade - upgrade if safe (HP threshold based on turn)
+    const minSafeHPForUpgrade = turn <= 5 ? 60 : turn <= 10 ? 55 : 50;
+    const isSafeForUpgrade = futureState.expectedHP > minSafeHPForUpgrade || 
+                            (turn <= 10 && playerTower.hp > 55); // More lenient early game
+    
+    if (remainingResources >= upgradeCost && shouldUpgrade && isSafeForUpgrade) {
       actions.push({ type: 'upgrade' });
       remainingResources -= upgradeCost;
-      Logger.debug('Upgrade action added', { cost: upgradeCost, remaining: remainingResources });
+      Logger.debug('Upgrade action added', { 
+        cost: upgradeCost, 
+        remaining: remainingResources,
+        turn,
+        currentHP: playerTower.hp,
+        expectedHP: futureState.expectedHP
+      });
     }
     
       // Attack best target using resource estimates and Game Theory history
@@ -659,8 +669,15 @@ export class KingdomWarsHandler {
   ): boolean {
     const { playerTower, enemyTowers, turn } = request;
     
-    // Basic safety check: must have enough resources and HP
-    if (availableResources < upgradeCost || playerTower.hp <= 50) {
+    // Basic safety check: must have enough resources
+    if (availableResources < upgradeCost) {
+      return false;
+    }
+    
+    // IMPROVED: More lenient HP requirement based on turn
+    const hp = playerTower.hp;
+    const minHP = turn <= 5 ? 60 : turn <= 10 ? 55 : 50; // More aggressive early game
+    if (hp <= minHP) {
       return false;
     }
 
@@ -690,21 +707,36 @@ export class KingdomWarsHandler {
         }
       });
 
-      // Upgrade if:
-      // 1. We'll still be safe (HP > 50) after upgrade
-      // 2. We'll have enough resources for next 3 turns
+      // IMPROVED: More aggressive upgrade criteria
+      // 1. We'll still be safe (HP threshold based on turn)
+      const minSafeHP = turn <= 5 ? 60 : turn <= 10 ? 55 : 50;
+      const willBeSafe = futureWithUpgrade.expectedHP > minSafeHP;
+      
+      // 2. We'll have enough resources for next 3 turns (lower threshold early game)
+      const minResources = turn <= 10 ? 15 : 20; // More aggressive early game
+      const willHaveResources = futureWithUpgrade.minResources >= minResources;
+      
       // 3. The upgrade provides benefit (more resource generation or better survival)
-      const willBeSafe = futureWithUpgrade.expectedHP > 50;
-      const willHaveResources = futureWithUpgrade.minResources >= 20; // Keep emergency buffer
+      const resourceGenIncrease = futureWithUpgrade.expectedResourceGeneration - futureWithoutUpgrade.expectedResourceGeneration;
+      const hpImprovement = futureWithUpgrade.expectedHP - futureWithoutUpgrade.expectedHP;
+      const damageReduction = futureWithoutUpgrade.expectedDamage - futureWithUpgrade.expectedDamage;
+      
       const providesBenefit = 
-        futureWithUpgrade.expectedResourceGeneration > futureWithoutUpgrade.expectedResourceGeneration ||
-        futureWithUpgrade.expectedHP > futureWithoutUpgrade.expectedHP ||
-        futureWithUpgrade.expectedDamage < futureWithoutUpgrade.expectedDamage;
-
-      if (willBeSafe && willHaveResources && providesBenefit) {
+        resourceGenIncrease > 0 || // Resource generation increase
+        hpImprovement > 0 || // HP improvement
+        damageReduction > 0; // Damage reduction
+      
+      // Early game: Upgrade if safe and provides ANY benefit
+      // Late game: Upgrade only if significant benefit
+      const isEarlyGame = turn <= 10;
+      const significantBenefit = resourceGenIncrease >= 10 || hpImprovement >= 5 || damageReduction >= 5;
+      
+      if (willBeSafe && willHaveResources && (isEarlyGame ? providesBenefit : significantBenefit)) {
         Logger.debug('Upgrade approved by lookahead', {
-          reason: 'Safe HP, sufficient resources, and provides benefit',
-          resourceGenIncrease: futureWithUpgrade.expectedResourceGeneration - futureWithoutUpgrade.expectedResourceGeneration
+          reason: isEarlyGame ? 'Early game: safe HP and provides benefit' : 'Late game: safe HP and significant benefit',
+          resourceGenIncrease,
+          hpImprovement,
+          damageReduction
         });
         return true;
       }
@@ -723,23 +755,40 @@ export class KingdomWarsHandler {
 
   /**
    * Simple upgrade heuristic (fallback when lookahead not available)
+   * IMPROVED: More aggressive upgrade strategy
    */
   private shouldUpgrade(
     playerTower: Tower,
     enemyTowers: Tower[],
     turn: number
   ): boolean {
-    // Upgrade if:
-    // 1. We have enough resources
-    // 2. We're not in immediate danger (HP > 50)
-    // 3. Early-mid game (turn < 20) OR we're behind in level
-    
+    const hp = playerTower.hp;
+    const level = playerTower.level;
     const avgEnemyLevel = enemyTowers.reduce((sum, e) => sum + e.level, 0) / enemyTowers.length;
-    const isBehind = playerTower.level < avgEnemyLevel;
-    const isSafe = playerTower.hp > 50;
-    const isEarlyGame = turn < 20;
+    const isBehind = level < avgEnemyLevel;
+    const isVeryBehind = level < avgEnemyLevel - 0.5; // More than 0.5 levels behind
     
-    return (isEarlyGame || isBehind) && isSafe;
+    // CRITICAL: Very early game (turns 0-5) - upgrade ASAP if safe
+    if (turn <= 5 && hp > 60) {
+      return true; // Aggressive early upgrade
+    }
+    
+    // HIGH PRIORITY: Early game (turns 6-10) - upgrade if safe
+    if (turn <= 10 && hp > 55) {
+      return true; // Upgrade early for resource generation advantage
+    }
+    
+    // MEDIUM PRIORITY: Mid game (turns 11-20) - upgrade if safe or behind
+    if (turn <= 20 && hp > 50) {
+      return isBehind || hp > 60; // Upgrade if behind or very safe
+    }
+    
+    // LATE GAME: Only upgrade if very behind (resource generation critical)
+    if (turn > 20) {
+      return isVeryBehind && hp > 50; // Only if significantly behind
+    }
+    
+    return false;
   }
 
   private shouldBuildArmor(playerTower: Tower, turn: number): boolean {
@@ -758,6 +807,7 @@ export class KingdomWarsHandler {
   /**
    * Enhanced armor decision with multi-turn lookahead for survival planning
    * Main goal: Stay alive - prioritize defense over everything else
+   * IMPROVED: More proactive defense strategy
    */
   private shouldBuildArmorWithLookahead(
     playerTower: Tower,
@@ -770,23 +820,43 @@ export class KingdomWarsHandler {
     const armor = playerTower.armor || 0;
     const resources = playerTower.resources || 0;
     
-    // CRITICAL: If HP is very low (< 40), prioritize armor heavily
-    if (hp < 40) {
+    // CRITICAL: If HP is very low (< 30), prioritize armor heavily - BUILD MAX
+    if (hp < 30) {
       const neededArmor = Math.max(0, 20 - armor); // Try to get to 20 armor
       return {
         shouldBuild: true,
-        recommendedAmount: Math.min(neededArmor, resources, 10),
-        reason: `CRITICAL: HP < 40, need armor for survival`
+        recommendedAmount: Math.min(neededArmor, resources, 10), // Build max (10) if possible
+        reason: `CRITICAL: HP < 30, need maximum armor for survival`
       };
     }
     
-    // HIGH PRIORITY: If HP is low (< 60) and predicted damage is high
-    if (hp < 60 && predictedDamage > 15) {
+    // HIGH PRIORITY: If HP is low (< 50), build armor proactively - BUILD MAX
+    if (hp < 50) {
       const neededArmor = Math.max(0, 15 - armor);
       return {
         shouldBuild: true,
+        recommendedAmount: Math.min(neededArmor, resources, 10), // Build max (10) if possible
+        reason: `HIGH: HP < 50, build maximum armor proactively`
+      };
+    }
+    
+    // MEDIUM-HIGH PRIORITY: If HP is moderate (< 60) and predicted damage is high - BUILD MAX
+    if (hp < 60 && predictedDamage > 10) {
+      const neededArmor = Math.max(0, 15 - armor);
+      return {
+        shouldBuild: true,
+        recommendedAmount: Math.min(neededArmor, resources, 10), // Build max (10) if possible
+        reason: `HP < 60 and predicted damage ${predictedDamage} > 10, build armor proactively`
+      };
+    }
+    
+    // MEDIUM PRIORITY: If HP is moderate (< 60) - build armor proactively
+    if (hp < 60 && armor < 10) {
+      const neededArmor = Math.max(0, 10 - armor);
+      return {
+        shouldBuild: true,
         recommendedAmount: Math.min(neededArmor, resources, 10),
-        reason: `HP < 60 and predicted damage ${predictedDamage} > 15, build armor`
+        reason: `HP < 60, build armor proactively (not reactive)`
       };
     }
     
@@ -796,16 +866,30 @@ export class KingdomWarsHandler {
       return {
         shouldBuild: true,
         recommendedAmount: Math.min(neededArmor, resources, 10),
-        reason: `Predicted HP ${predictedHP} < 50, need armor buffer`
+        reason: `Predicted HP ${predictedHP.toFixed(1)} < 50, need armor buffer`
       };
     }
     
-    // LATE GAME: Fatigue damage (turn 25+)
-    if (turn >= 25 && armor < 10) {
+    // LATE GAME: Fatigue damage (turn 25+) - BUILD MAX ARMOR
+    if (turn >= 25) {
+      const targetArmor = 15; // Higher target for late game
+      if (armor < targetArmor) {
+        const neededArmor = Math.max(0, targetArmor - armor);
+        return {
+          shouldBuild: true,
+          recommendedAmount: Math.min(neededArmor, resources, 10), // Build max each turn
+          reason: `Late game (turn ${turn}), fatigue damage requires maximum armor`
+        };
+      }
+    }
+    
+    // PREPARE FOR LATE GAME: Turn 20-24, build armor buffer
+    if (turn >= 20 && turn < 25 && armor < 10) {
+      const neededArmor = Math.max(0, 10 - armor);
       return {
         shouldBuild: true,
-        recommendedAmount: Math.min(10 - armor, resources, 10),
-        reason: `Late game (turn ${turn}), fatigue damage requires armor`
+        recommendedAmount: Math.min(neededArmor, resources, 10),
+        reason: `Preparing for late game (turn ${turn}), build armor buffer`
       };
     }
     
@@ -820,7 +904,7 @@ export class KingdomWarsHandler {
     }
     
     // LOW PRIORITY: General armor maintenance (armor < 5)
-    if (armor < 5 && resources >= 5 && hp > 50) {
+    if (armor < 5 && resources >= 5 && hp > 60) {
       return {
         shouldBuild: true,
         recommendedAmount: Math.min(5 - armor, resources, 5),
